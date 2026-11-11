@@ -31,7 +31,19 @@ function checkReadable(response: Response, what: string): void {
   expect(origin === "*", `${what}: Access-Control-Allow-Origin is ${JSON.stringify(origin)}, expected exactly "*"`);
 }
 
-const manifestResponse = await fetch(`${site}/manifest.json`, { cache: "no-store" });
+/** Fetches the manifest, waiting a few minutes for a host that has only just been published to. */
+async function fetchManifest(): Promise<Response> {
+  const deadline = Date.now() + 4 * 60_000;
+  for (;;) {
+    const response = await fetch(`${site}/manifest.json`, { cache: "no-store" }).catch(() => undefined);
+    if (response?.status === 200 || Date.now() > deadline) {
+      return response ?? new Response(null, { status: 503 });
+    }
+    await Bun.sleep(10_000);
+  }
+}
+
+const manifestResponse = await fetchManifest();
 expect(manifestResponse.status === 200, `manifest: status ${manifestResponse.status}`);
 checkReadable(manifestResponse, "manifest");
 expect(

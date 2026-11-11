@@ -186,3 +186,46 @@ test("a trace reports only the wind it downloaded itself", async () => {
   expect(two.files).toBe(page.winds.files - settled);
   expect(two.files).toBe(0);
 });
+
+test("the manifest is always asked for fresh, the wind is not", async () => {
+  const asked: [string, boolean][] = [];
+  const recording: Fetcher = async (url, isFresh) => {
+    asked.push([url, isFresh === true]);
+    return fromDisk(url);
+  };
+  const page = await fresh(recording);
+  await runTrace(page.engine, page.winds, request);
+  const manifests = asked.filter(([url]) => url.endsWith("manifest.json"));
+  const wind = asked.filter(([url]) => url.endsWith(".uwb"));
+  expect(manifests).toEqual([[join(data, "wind", "manifest.json"), true]]);
+  expect(wind.length).toBeGreaterThan(4);
+  expect(wind.every(([, isFresh]) => !isFresh)).toBe(true);
+});
+
+test("downloads nobody needed are let go, and a trace still finishes right", async () => {
+  const baseline = await runTrace(engine, winds, request);
+  let downloads = 0;
+  const counting: Fetcher = async (url) => {
+    if (url.endsWith(".uwb")) downloads += 1;
+    return fromDisk(url);
+  };
+  const page = await fresh(counting);
+  // Ask ahead for far more files than are kept: every tile of one band on every day.
+  const everywhere = page.winds.manifest.days.flatMap((day) =>
+    Array.from({ length: 228 }, (_, tile) => [day.times[0] as number, tile, 2] as const),
+  );
+  page.winds.prefetch(everywhere);
+  await Bun.sleep(300);
+  expect(downloads).toBe(everywhere.length);
+
+  // The first files asked for were let go: asking again downloads them again.
+  // The last ones are still held.
+  const before = downloads;
+  await page.winds.fetch([everywhere[0] as (typeof everywhere)[number]]);
+  expect(downloads).toBe(before + 1);
+  await page.winds.fetch([everywhere.at(-1) as (typeof everywhere)[number]]);
+  expect(downloads).toBe(before + 1);
+
+  const result = await runTrace(page.engine, page.winds, request);
+  expect([...result.points]).toEqual([...baseline.points]);
+}, 60_000);

@@ -42,7 +42,7 @@ From the command line:
 
 ## Hosting it
 
-The page is static files (`web/dist`). The wind is static files too (`data/wind`, about 260 MB). `.github/workflows/wind.yml` refreshes the wind four times a day and publishes both to GitHub Pages, with no secrets to set up. They can also live on different hosts: build the page with `UPWIND_WIND_BASE=https://your-wind-host` and serve the wind with `Access-Control-Allow-Origin: *`. A trace downloads a few megabytes, so choose a wind host that does not cut you off after a fixed amount of traffic.
+The page is static files (`web/dist`). The wind is static files too (`data/wind`, about 260 MB). `.github/workflows/wind.yml` refreshes the wind four times a day and publishes it to the repository's GitHub Pages site, with no secrets. In a new repository, switch Pages on once (Settings → Pages → Build and deployment → Source: GitHub Actions) and run the workflow by hand the first time. The page is built by Vercel from `vercel.json`. The two can live on any hosts: build the page with `UPWIND_WIND_BASE=https://your-wind-host` and serve the wind with `Access-Control-Allow-Origin: *`. A trace downloads a few megabytes, so choose a wind host that does not cut you off after a fixed amount of traffic.
 
 ## How far to trust it
 
@@ -84,4 +84,4 @@ scripts/       build, dev server, place-name grid
 
 ## Licence
 
-Dual-licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your option.
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your option. What the built page includes from other projects is listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
