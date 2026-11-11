@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use upwind_core::codec::{read_header, FORMAT};
 use upwind_core::grid::{BandId, TileId, LEVELS_PA};
 
-use crate::time::{cycle_to_unix, unix_to_cycle};
+use crate::time::unix_to_cycle;
 
 pub const CYCLE_S: i64 = 21_600;
 pub const DAY_S: i64 = 86_400;
@@ -92,7 +92,6 @@ impl Day {
         format!("{}.{hash:08x}", &unix_to_cycle(self.start)[..8])
     }
 
-    #[cfg(test)]
     pub fn times(&self) -> Vec<i64> {
         self.entries.iter().map(Entry::valid_time).collect()
     }
@@ -130,32 +129,35 @@ pub struct Published {
     pub times: Vec<i64>,
 }
 
-/// The days published under `wind/`, in time order. Their valid times are
-/// read from the first file of each.
+/// The day directories the manifest lists, in its order; empty when there
+/// is no manifest yet.
+pub fn manifest_dirs(data: &Path) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(wind_dir(data).join("manifest.json")) else {
+        return Vec::new();
+    };
+    text.split("\"dir\":\"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The days the manifest lists, with their valid times read from the first
+/// file of each.
 pub fn published(data: &Path) -> io::Result<Vec<Published>> {
     let wind = wind_dir(data);
-    let mut days = Vec::new();
-    for item in fs::read_dir(&wind)? {
-        let item = item?;
-        let Some(dir) = item.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
-        let dated = dir.len() > 9 && cycle_to_unix(&format!("{}00", &dir[..8])).is_some();
-        if !dated || dir.ends_with(".partial") {
-            continue;
-        }
-        let Ok(bytes) = fs::read(file_path(&item.path(), 0, 0)) else {
-            continue;
-        };
-        let header =
-            read_header(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        days.push(Published {
-            dir,
-            times: header.valid_times,
-        });
-    }
-    days.sort_by_key(|day| day.times.first().copied());
-    Ok(days)
+    manifest_dirs(data)
+        .into_iter()
+        .map(|dir| {
+            let bytes = fs::read(file_path(&wind.join(&dir), 0, 0))?;
+            let header =
+                read_header(&bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            Ok(Published {
+                dir,
+                times: header.valid_times,
+            })
+        })
+        .collect()
 }
 
 /// The manifest the web page reads to learn what history exists.
@@ -190,6 +192,7 @@ pub fn write_manifest(data: &Path, days: &[Published], generated: i64) -> io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::cycle_to_unix;
 
     #[test]
     fn plan_is_one_valid_time_every_three_hours() {
@@ -245,5 +248,14 @@ mod tests {
             "{json}"
         );
         assert!(json.contains("\"levels_hpa\":[1000,975,"));
+
+        // The directories can be read back from the manifest text.
+        let data =
+            std::env::temp_dir().join(format!("upwind-manifest-test-{}", std::process::id()));
+        fs::create_dir_all(wind_dir(&data)).unwrap();
+        assert!(manifest_dirs(&data).is_empty());
+        fs::write(wind_dir(&data).join("manifest.json"), json).unwrap();
+        assert_eq!(manifest_dirs(&data), ["20261111.0badcafe"]);
+        fs::remove_dir_all(data).unwrap();
     }
 }

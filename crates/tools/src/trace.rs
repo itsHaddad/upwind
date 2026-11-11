@@ -54,11 +54,16 @@ pub fn run(data: &Path, starts: &[Start], time: Option<i64>, hours: u32) -> Resu
     let started = Instant::now();
     let mut read = HashSet::new();
     let mut bytes_read = 0;
+    let mut asked_before = Vec::new();
     loop {
         match tracer.advance(&store, u32::MAX) {
             Status::Done => break,
             Status::Running => {}
             Status::Need(keys) => {
+                if keys.iter().all(|key| store.has(*key)) || keys == asked_before {
+                    return Err("the wind files do not hold what the trace needs".into());
+                }
+                asked_before.clone_from(&keys);
                 for (valid, tile, band) in keys {
                     let day = day_of(valid).ok_or("tracer asked for an unknown time")?;
                     let path = timeline::file_path(&wind.join(&day.dir), tile, band);

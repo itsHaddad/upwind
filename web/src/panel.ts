@@ -25,7 +25,7 @@ function span(leg: Leg): string {
 }
 
 function title(region: Region | undefined): string {
-  if (!region) return "Open water";
+  if (!region) return "Unnamed area";
   const text = inSentence(region).replace(/^the /, "");
   return `${text[0]?.toUpperCase()}${text.slice(1)}`;
 }
@@ -109,14 +109,14 @@ export class Panel {
   showMoment(whole: number, startTime: number, locate: () => { point: PathPoint; region: Region | undefined }): string {
     if (whole !== this.shownHour) {
       const { point, region } = locate();
-      const where = region ? `over ${inSentence(region)}` : "over open water";
+      const where = region ? `over ${inSentence(region)}, ` : "";
       this.shownHour = whole;
       this.scrub.value = String(whole);
       const when = whenFormat.format((startTime - whole * 3600) * 1000);
       const height = roundKm(point.heightM);
       const lead = document.createElement("b");
       lead.textContent = `${ago(whole)[0]?.toUpperCase()}${ago(whole).slice(1)}`;
-      this.moment.replaceChildren(lead, ` · ${when} · ${where}, about ${height} m above the ground`);
+      this.moment.replaceChildren(lead, ` · ${when} · ${where}about ${height} m above the ground`);
       for (const { leg, item } of this.legItems) {
         item.classList.toggle("current", whole >= leg.untilHoursAgo && whole <= leg.fromHoursAgo);
       }

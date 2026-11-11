@@ -15,6 +15,9 @@
 //! are 30° wide, and poleward of 75° every fourth and are 60° wide. That
 //! keeps the distance between stored points, and the ground a tile covers,
 //! roughly even, and stops polar traces from crossing a tile every hour.
+//! Where a row meets a row of wider spacing, the finer row's edge holds
+//! values interpolated between the coarser row's points ([`edge_stride`]),
+//! so the wind is continuous across every edge.
 
 /// Grid spacing in degrees.
 pub const CELL_DEG: f64 = 1.0;
@@ -149,6 +152,23 @@ fn row_of(tile: TileId) -> (usize, usize) {
         .find(|row| row_start(*row) <= tile)
         .unwrap_or(0);
     (row, tile - row_start(row))
+}
+
+/// Grid longitudes between the points that define the wind along row `j`
+/// of a tile. Inside a tile that is the tile's own spacing. Along an edge
+/// shared with a row of wider spacing it is the wider one: there the finer
+/// tile stores values interpolated between the coarser tile's points, so
+/// that both give the same wind all along the edge.
+pub fn edge_stride(tile: TileId, j: usize) -> usize {
+    let (row, _) = row_of(tile);
+    let neighbour = if j == 0 && row > 0 {
+        ROW_STRIDE[row - 1]
+    } else if j == TILE_CELLS && row + 1 < TILES_Y {
+        ROW_STRIDE[row + 1]
+    } else {
+        ROW_STRIDE[row]
+    };
+    neighbour.max(ROW_STRIDE[row])
 }
 
 /// Global grid indices `(lon_index, lat_index)` of point `(i, j)` of a tile.

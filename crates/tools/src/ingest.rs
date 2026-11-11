@@ -2,6 +2,10 @@
 //!
 //! Two stages: download the valid times that are not cached yet, then pack
 //! every day whose set of valid times changed into wind files.
+//!
+//! A day that has been replaced by a newer packing stays on disk for one
+//! more run. Pages that were opened before this run still hold the previous
+//! manifest, and it must keep pointing at files that exist.
 
 use std::fs;
 use std::path::Path;
@@ -11,8 +15,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use crate::cache;
 use crate::gfs::{self, Result};
 use crate::pack;
+use crate::prune::prune;
 use crate::time::format_utc;
-use crate::timeline::{self, Day, Entry, TAIL_HOURS};
+use crate::timeline::{self, Day, Entry, Published, TAIL_HOURS};
 
 pub struct Options<'a> {
     pub data: &'a Path,
@@ -51,37 +56,6 @@ fn for_each<T: Sync>(
     failures.into_inner().unwrap()
 }
 
-/// Removes cached fields and published days that are no longer planned.
-fn prune(data: &Path, plan: &[Entry], days: &[Day]) -> Result<usize> {
-    let mut removed = 0;
-    let keep_cache: Vec<_> = plan.iter().map(|e| e.cache_path(data)).collect();
-    if let Ok(cycles) = fs::read_dir(data.join("cache")) {
-        for cycle in cycles {
-            let cycle = cycle?.path();
-            for file in fs::read_dir(&cycle)? {
-                let file = file?.path();
-                if !keep_cache.contains(&file) {
-                    fs::remove_file(&file)?;
-                    removed += 1;
-                }
-            }
-            if fs::read_dir(&cycle)?.next().is_none() {
-                fs::remove_dir(&cycle)?;
-            }
-        }
-    }
-    let keep_days: Vec<String> = days.iter().map(Day::dir).collect();
-    for item in fs::read_dir(timeline::wind_dir(data))? {
-        let item = item?;
-        let name = item.file_name().to_string_lossy().into_owned();
-        if item.path().is_dir() && !keep_days.contains(&name) {
-            fs::remove_dir_all(item.path())?;
-            removed += 1;
-        }
-    }
-    Ok(removed)
-}
-
 pub fn run(options: &Options) -> Result<()> {
     let started = Instant::now();
     let data = options.data;
@@ -90,6 +64,7 @@ pub fn run(options: &Options) -> Result<()> {
     let latest = gfs::latest_cycle(&agent, now, TAIL_HOURS)?;
     let plan = timeline::plan(latest, options.days);
     fs::create_dir_all(timeline::wind_dir(data))?;
+    let previously_published = timeline::manifest_dirs(data);
 
     let missing: Vec<Entry> = plan
         .iter()
@@ -139,9 +114,24 @@ pub fn run(options: &Options) -> Result<()> {
         Ok(())
     }));
 
-    let removed = prune(data, &plan, &days)?;
-    let published = timeline::published(data)?;
+    let published: Vec<Published> = days
+        .iter()
+        .filter(|day| timeline::wind_dir(data).join(day.dir()).is_dir())
+        .map(|day| Published {
+            dir: day.dir(),
+            times: day.times(),
+        })
+        .collect();
     timeline::write_manifest(data, &published, unix_now())?;
+
+    // Rebuilding old history with --now must not throw away the present.
+    let removed = if options.now.is_none() {
+        let mut keep: Vec<String> = published.iter().map(|day| day.dir.clone()).collect();
+        keep.extend(previously_published);
+        prune(data, &plan, &keep)?
+    } else {
+        0
+    };
     eprintln!(
         "packed {} days ({:.1} MB), removed {removed} old items, {} days published, {:.0} s",
         stale.len(),

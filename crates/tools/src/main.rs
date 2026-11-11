@@ -4,6 +4,7 @@ mod cache;
 mod gfs;
 mod ingest;
 mod pack;
+mod prune;
 mod synth;
 mod time;
 mod timeline;

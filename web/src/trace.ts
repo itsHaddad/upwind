@@ -21,6 +21,9 @@ export interface TraceResult {
   /** Times the trace had to stop for wind that was not downloaded yet, and for how long. */
   waits: number;
   waitMs: number;
+  /** Wind downloaded while this trace ran. */
+  bytes: number;
+  files: number;
 }
 
 export interface TraceProgress {
@@ -53,6 +56,11 @@ export function availableHours(winds: Winds, startTime: number, wanted: number):
   return Math.max(0, Math.min(wanted, Math.floor((startTime - winds.firstTime) / 3600)));
 }
 
+/**
+ * Runs a trace on an engine that no other trace is using. To replace a
+ * running trace, abort it through `signal` first: an aborted trace never
+ * touches the engine again.
+ */
 export async function runTrace(
   engine: Engine,
   winds: Winds,
@@ -60,11 +68,13 @@ export async function runTrace(
   options: TraceOptions = {},
 ): Promise<TraceResult> {
   const chunk = options.rowsPerChunk ?? 240;
+  const before = { bytes: winds.bytes, files: winds.files };
   engine.start(request.starts, request.startTime, request.hours);
   let computeMs = 0;
   let waits = 0;
   let waitMs = 0;
   let reported = 0;
+  let lastNeed = "";
   for (;;) {
     options.signal?.throwIfAborted();
     const began = performance.now();
@@ -79,21 +89,46 @@ export async function runTrace(
       reported = rows;
       options.onProgress?.({ rows, points: engine.points() });
       await options.pause?.();
-    }
-    if (step.status === "need") {
-      const asked = performance.now();
-      const files = await winds.fetchNew(step.tiles);
-      const waited = performance.now() - asked;
-      if (waited > 4) {
-        waits += 1;
-        waitMs += waited;
-      }
       options.signal?.throwIfAborted();
-      for (const file of files) engine.add(file);
+    }
+    if (step.status !== "need") continue;
+
+    // The engine asks only for wind it does not hold. If it asks for the
+    // same wind twice in a row, the files it was given did not contain it,
+    // and asking again would go round for ever.
+    const need = step.tiles.map((key) => key.join(":")).join(" ");
+    if (need === lastNeed) throw new Error("Some of the wind for this path could not be read. Try again.");
+    lastNeed = need;
+
+    const asked = performance.now();
+    const files = await winds.fetch(step.tiles);
+    const waited = performance.now() - asked;
+    if (waited > 4) {
+      waits += 1;
+      waitMs += waited;
+    }
+    // Checked before the engine is touched: after an abort it may already
+    // be running another trace. The files stay with `winds` for that trace.
+    options.signal?.throwIfAborted();
+    for (const file of files) {
+      try {
+        engine.add(file.bytes);
+      } finally {
+        winds.forget(file.url);
+      }
     }
   }
   const points = engine.points();
   const rows = points.length / (request.starts.length * ROW_WIDTH);
   options.onProgress?.({ rows, points });
-  return { request, rows, points, computeMs, waits, waitMs };
+  return {
+    request,
+    rows,
+    points,
+    computeMs,
+    waits,
+    waitMs,
+    bytes: winds.bytes - before.bytes,
+    files: winds.files - before.files,
+  };
 }

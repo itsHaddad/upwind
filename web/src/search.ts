@@ -8,6 +8,8 @@ export class SearchBox {
   private readonly input: HTMLInputElement;
   private readonly list: HTMLElement;
   private places: Place[] = [];
+  /** The text the listed places were found for. */
+  private listedFor = "";
   private selected = 0;
   private pending: AbortController | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -47,9 +49,11 @@ export class SearchBox {
     const pending = new AbortController();
     this.pending = pending;
     try {
-      const places = await searchPlaces(this.input.value, pending.signal);
+      const query = this.input.value.trim();
+      const places = await searchPlaces(query, pending.signal);
       if (pending.signal.aborted) return [];
       this.places = places;
+      this.listedFor = query;
       this.selected = 0;
       this.render();
       return places;
@@ -61,8 +65,9 @@ export class SearchBox {
 
   private async submit(): Promise<void> {
     clearTimeout(this.timer);
-    const current = this.places[this.selected];
-    const place = !this.list.hidden && current ? current : (await this.search())[0];
+    // The list may still show places for what was typed a moment ago.
+    const upToDate = !this.list.hidden && this.listedFor === this.input.value.trim();
+    const place = (upToDate ? this.places[this.selected] : undefined) ?? (await this.search())[0];
     if (place) this.pick(place);
     else if (this.input.value.trim()) this.onError(`No place called "${this.input.value.trim()}" was found.`);
   }

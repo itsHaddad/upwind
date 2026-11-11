@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Engine, ROW_WIDTH } from "../src/engine";
 import { availableHours, latestStart, runTrace } from "../src/trace";
-import { type Fetcher, Winds } from "../src/winds";
+import { type Fetcher, MissingWindError, Winds } from "../src/winds";
 
 const root = join(import.meta.dir, "../..");
 const native = join(root, "target/release/upwind");
@@ -93,13 +93,96 @@ test("a second trace reuses the wind already downloaded", async () => {
   expect(winds.files).toBe(before);
 });
 
-test("a trace can be cancelled", async () => {
+/** A fresh engine and wind history, so a test cannot lean on what another one loaded. */
+async function fresh(fetcher: Fetcher = fromDisk): Promise<{ engine: Engine; winds: Winds }> {
+  const freshEngine = await Engine.load(await Bun.file(join(root, "web/public/engine.wasm")).arrayBuffer());
+  const freshWinds = await Winds.open(join(data, "wind"), fetcher);
+  freshEngine.reset(freshWinds.times);
+  return { engine: freshEngine, winds: freshWinds };
+}
+
+const request = { starts, startTime: END, hours: 48 };
+
+test("a trace that is already cancelled does not start", async () => {
   const controller = new AbortController();
   controller.abort();
-  const run = runTrace(engine, winds, { starts, startTime: END, hours: 48 }, { signal: controller.signal });
-  expect(run).rejects.toThrow();
+  await expect(runTrace(engine, winds, request, { signal: controller.signal })).rejects.toThrow();
 });
 
-test("a damaged tile is refused", () => {
+test("a trace interrupted while downloading leaves the next one able to finish", async () => {
+  const baseline = await runTrace(engine, winds, request);
+
+  // Interrupt at several different moments: during the first download,
+  // during a later one, and between downloads.
+  for (const stopAt of [1, 2, 5]) {
+    const controller = new AbortController();
+    let downloads = 0;
+    const interrupting: Fetcher = async (url) => {
+      const bytes = await fromDisk(url);
+      if (url.endsWith(".uwb") && ++downloads === stopAt) controller.abort();
+      return bytes;
+    };
+    const page = await fresh(interrupting);
+    await expect(runTrace(page.engine, page.winds, request, { signal: controller.signal })).rejects.toThrow();
+
+    // The same page traces again, as when a person picks another place.
+    const again = await runTrace(page.engine, page.winds, request, { rowsPerChunk: 6, pause: () => Bun.sleep(0) });
+    expect(again.rows).toBe(49);
+    expect([...again.points]).toEqual([...baseline.points]);
+  }
+}, 60_000);
+
+test("wind that does not hold what was asked for ends the trace instead of hanging it", async () => {
+  // Every request is answered with the same file, whatever was asked for.
+  let first: Uint8Array | undefined;
+  const stuck: Fetcher = async (url) => {
+    if (!url.endsWith(".uwb")) return fromDisk(url);
+    first ??= await fromDisk(url);
+    return first;
+  };
+  const page = await fresh(stuck);
+  await expect(runTrace(page.engine, page.winds, request)).rejects.toThrow("could not be read");
+});
+
+test("a damaged file fails the trace and is fetched afresh on the next try", async () => {
+  let damage = true;
+  let fetched = 0;
+  const flaky: Fetcher = async (url) => {
+    const bytes = await fromDisk(url);
+    if (!url.endsWith(".uwb")) return bytes;
+    fetched += 1;
+    return damage ? bytes.slice(0, bytes.length - 9) : bytes;
+  };
+  const page = await fresh(flaky);
+  await expect(runTrace(page.engine, page.winds, request, { lookAhead: false })).rejects.toThrow("damaged");
+  const afterFailure = fetched;
+  damage = false;
+  const again = await runTrace(page.engine, page.winds, request, { lookAhead: false });
+  expect(again.rows).toBe(49);
+  expect(fetched).toBeGreaterThan(afterFailure);
+});
+
+test("a file that has left the server is reported as a stale history", async () => {
+  const gone: Fetcher = async (url) => {
+    if (url.endsWith(".uwb")) throw new MissingWindError("gone");
+    return fromDisk(url);
+  };
+  const page = await fresh(gone);
+  await expect(runTrace(page.engine, page.winds, request)).rejects.toBeInstanceOf(MissingWindError);
+});
+
+test("a damaged file is refused", () => {
   expect(() => engine.add(new Uint8Array(64))).toThrow();
+});
+
+test("a trace reports only the wind it downloaded itself", async () => {
+  const page = await fresh();
+  const one = await runTrace(page.engine, page.winds, request);
+  expect(one.files).toBeGreaterThan(0);
+  expect(one.bytes).toBe(page.winds.bytes);
+  await Bun.sleep(50);
+  const settled = page.winds.files;
+  const two = await runTrace(page.engine, page.winds, request);
+  expect(two.files).toBe(page.winds.files - settled);
+  expect(two.files).toBe(0);
 });

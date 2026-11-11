@@ -13,7 +13,7 @@ import type { GeometryCollection, Topology } from "topojson-specification";
 const root = join(import.meta.dir, "..");
 const cache = join(root, "node_modules/.cache/upwind");
 const MARINE = "ne_50m_geography_marine_polys";
-const MARINE_URL = `https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/${MARINE}.geojson`;
+const MARINE_URL = `https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/${MARINE}.geojson`;
 
 /** Grid cells per degree. */
 const PER_DEGREE = 4;

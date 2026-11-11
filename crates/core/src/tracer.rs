@@ -95,8 +95,12 @@ impl Tracer {
                 surface: 0.0,
                 surface_k: 0.0,
                 time: start_time,
-                phase: Phase::Pending {
-                    height_m: s.height_m,
+                phase: if s.lon.is_finite() && s.lat.is_finite() && s.height_m.is_finite() {
+                    Phase::Pending {
+                        height_m: s.height_m,
+                    }
+                } else {
+                    Phase::Ended
                 },
             })
             .collect::<Vec<_>>();

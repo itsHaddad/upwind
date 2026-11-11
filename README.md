@@ -15,7 +15,7 @@ NOAA GFS model output            upwind ingest (Rust)             browser
 ```
 
 - **The engine** (`crates/core`) is about a thousand lines of Rust with one small dependency. It holds the wind file format, interpolation, and the trajectory integrator: the predictor-corrector scheme NOAA's [HYSPLIT](https://www.ready.noaa.gov/HYSPLIT.php) uses, with winds averaged as Earth-centred vectors so paths stay accurate on curved flows and across the poles. It compiles unchanged to native code and to an 87 kB WebAssembly module.
-- **The wind files.** The 1° global grid on 17 pressure levels is cut three ways: into 15° tiles, into three altitude bands, and into days. One file holds one tile and band for one day (about 35 kB). A trace asks for a chunk only when the air enters it, so a ten-day trace of eight parcels downloads a few megabytes out of a history of three hundred. Files are named after the model output they were built from and are immutable once published.
+- **The wind files.** The 1° global grid on 17 pressure levels is cut three ways: into 15° tiles, into three altitude bands, and into days. One file holds one tile and band for one day (about 35 kB). A trace asks for a chunk only when the air enters it, so a ten-day trace of eight parcels downloads a few megabytes out of a history of three hundred. Files are named after the model output they were built from, so a file never changes once published; a day that has been repacked keeps its old files for one more refresh, for pages that are already open.
 - **The pipeline** (`crates/tools`) reads NOAA's index files and downloads only the fields it needs by byte range (about 4 MB per valid time), caches them, and repacks only the days that changed. A full ten days builds in a few minutes; an update after a new model run takes seconds.
 - **The page** (`web/`) is TypeScript with no framework: a WebGL2 globe, the engine wrapper, and the story text. Place names along the path come from a 29 kB lookup grid built from Natural Earth.
 
@@ -29,7 +29,7 @@ cargo build --release -p upwind-tools
 ./target/release/upwind ingest          # ten days of wind into ./data (≈ 600 MB, a few minutes)
 bun scripts/build-regions.ts            # the place-name grid
 bun run build                           # engine to WebAssembly, page to web/dist
-bun run dev                             # http://localhost:4173
+bun run dev                             # http://localhost:4173 (HOST=0.0.0.0 to reach it from another machine)
 ```
 
 From the command line:
@@ -39,6 +39,10 @@ From the command line:
 ```
 
 `bun run check` runs the formatters, linters, type check and every test.
+
+## Hosting it
+
+The page is static files (`web/dist`). The wind is static files too (`data/wind`, about 260 MB), refreshed four times a day by `.github/workflows/wind.yml`. They can live on different hosts: build the page with `UPWIND_WIND_BASE=https://your-wind-host` and serve the wind with `Access-Control-Allow-Origin: *`. A trace downloads a few megabytes, so choose a wind host that does not cut you off after a fixed amount of traffic.
 
 ## How far to trust it
 

@@ -13,21 +13,36 @@ export interface Manifest {
   days: { dir: string; times: number[] }[];
 }
 
+/**
+ * A wind file the manifest lists is gone from the server. The history is
+ * refreshed every few hours and old days are removed, so this means the
+ * manifest in hand is out of date: open the history again.
+ */
+export class MissingWindError extends Error {}
+
 export type Fetcher = (url: string) => Promise<Uint8Array>;
 
 const browserFetch: Fetcher = async (url) => {
   const response = await fetch(url);
-  if (!response.ok) throw new Error(`Could not load ${url} (${response.status}).`);
+  if (response.status === 404) throw new MissingWindError("The wind history was updated while this page was open.");
+  if (!response.ok)
+    throw new Error(`Could not load the wind (${response.status}). Check your connection and try again.`);
   return new Uint8Array(await response.arrayBuffer());
 };
+
+/** A downloaded wind file: one tile and altitude band for one day. */
+export interface WindFile {
+  url: string;
+  bytes: Uint8Array;
+}
 
 export class Winds {
   /** Valid times in unix seconds, oldest first. */
   readonly times: number[];
   /** Index into the manifest's days of each valid time. */
   private readonly dayOf = new Map<number, number>();
+  /** Downloads running or finished and not yet given to the engine. */
   private readonly downloads = new Map<string, Promise<Uint8Array>>();
-  private readonly delivered = new Set<string>();
   /** Bytes downloaded so far. */
   bytes = 0;
   /** Files downloaded so far. */
@@ -61,17 +76,13 @@ export class Winds {
     return this.times[this.times.length - 1] as number;
   }
 
-  private fileUrl(day: number, tile: number, band: number): string {
-    return `${this.base}/${(this.manifest.days[day] as { dir: string }).dir}/${band}/${tile}.uwb`;
+  private fileUrl(key: TileKey): string {
+    const day = this.dayOf.get(key[0]);
+    if (day === undefined) throw new Error(`No wind is stored for time ${key[0]}.`);
+    return `${this.base}/${(this.manifest.days[day] as { dir: string }).dir}/${key[2]}/${key[1]}.uwb`;
   }
 
-  private day([time]: TileKey): number {
-    const day = this.dayOf.get(time);
-    if (day === undefined) throw new Error(`No wind is stored for time ${time}.`);
-    return day;
-  }
-
-  /** Downloads a file once; later requests share the same download. */
+  /** Downloads a file once; requests made while it is held share it. */
   private download(url: string): Promise<Uint8Array> {
     let pending = this.downloads.get(url);
     if (!pending) {
@@ -81,28 +92,28 @@ export class Winds {
         return bytes;
       });
       this.downloads.set(url, pending);
-      pending.catch(() => this.downloads.delete(url));
+      pending.catch(() => this.forget(url));
     }
     return pending;
   }
 
-  /**
-   * The files that hold the given chunks and have not been handed out yet.
-   * Each file is handed out once: it holds a whole day of one tile and
-   * band, and the engine keeps what it is given.
-   */
-  async fetchNew(keys: readonly TileKey[]): Promise<Uint8Array[]> {
-    const urls = new Set(keys.map((key) => this.fileUrl(this.day(key), key[1], key[2])));
-    const fresh = [...urls].filter((url) => !this.delivered.has(url));
-    const files = await Promise.all(fresh.map((url) => this.download(url)));
-    for (const url of fresh) this.delivered.add(url);
-    return files;
+  /** The files that hold the given chunks: one per tile, band and day. */
+  async fetch(keys: readonly TileKey[]): Promise<WindFile[]> {
+    const urls = [...new Set(keys.map((key) => this.fileUrl(key)))];
+    return Promise.all(urls.map(async (url) => ({ url, bytes: await this.download(url) })));
   }
 
   /** Starts downloading the files that hold the given chunks, ahead of need. */
   prefetch(keys: readonly TileKey[]): void {
-    for (const key of keys) {
-      this.download(this.fileUrl(this.day(key), key[1], key[2])).catch(() => {});
-    }
+    for (const key of keys) this.download(this.fileUrl(key)).catch(() => {});
+  }
+
+  /**
+   * Lets go of a downloaded file. Call it once the engine has the file (the
+   * engine keeps what it is given and will not ask again), or when the file
+   * turned out to be unusable, so that a retry downloads it afresh.
+   */
+  forget(url: string): void {
+    this.downloads.delete(url);
   }
 }

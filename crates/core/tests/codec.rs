@@ -84,3 +84,19 @@ fn refuses_to_mix_tiles_in_one_file() {
     day[1].tile = 3;
     encode(&day, 6);
 }
+
+#[test]
+fn refuses_levels_that_are_not_the_bands() {
+    let bytes = encode(&sample_day(), 6);
+    // The first level is the f32 at byte 20.
+    let mut not_a_number = bytes.clone();
+    not_a_number[20..24].copy_from_slice(&f32::NAN.to_le_bytes());
+    assert_eq!(decode(&not_a_number), Err(DecodeError::BadShape));
+    let mut wrong_level = bytes.clone();
+    wrong_level[20..24].copy_from_slice(&91_000.0_f32.to_le_bytes());
+    assert_eq!(decode(&wrong_level), Err(DecodeError::BadShape));
+    // The same levels filed under another band are refused too.
+    let mut wrong_band = bytes;
+    wrong_band[6] = 0;
+    assert_eq!(decode(&wrong_band), Err(DecodeError::BadShape));
+}

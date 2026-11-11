@@ -4,7 +4,7 @@
 //! Layout (little endian):
 //!
 //! ```text
-//!  0  magic "UWB3"
+//!  0  magic "UWB4"
 //!  4  u16  tile id
 //!  6  u8   altitude band
 //!  7  u8   number of pressure levels (L)
@@ -25,12 +25,12 @@
 //! high bytes are stored apart so that deflate sees long runs of similar
 //! bytes.
 
-use crate::grid::{BandId, TileId, BAND_COUNT, PLANE, TILE_COUNT, TILE_N};
+use crate::grid::{band_levels, BandId, TileId, BAND_COUNT, PLANE, TILE_COUNT, TILE_N};
 
 /// Changes whenever the files change shape; also part of every published
 /// directory name, so old and new files never mix.
-pub const FORMAT: u8 = 3;
-const MAGIC: &[u8; 4] = b"UWB3";
+pub const FORMAT: u8 = 4;
+const MAGIC: &[u8; 4] = b"UWB4";
 const HEADER: usize = 20;
 /// Most valid times one file may hold.
 const MAX_TIMES: usize = 32;
@@ -211,11 +211,17 @@ pub fn read_header(bytes: &[u8]) -> Result<Header, DecodeError> {
         return Err(DecodeError::TooShort);
     }
     let f32_at = |o: usize| f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
+    // The store picks a file by band and then trusts its levels, so a file
+    // whose levels are not its band's (or are not numbers) is refused here.
+    let levels_pa: Vec<f32> = (0..levels).map(|k| f32_at(HEADER + 4 * k)).collect();
+    if levels_pa != band_levels(band) {
+        return Err(DecodeError::BadShape);
+    }
     let i64_at = |o: usize| i64::from_le_bytes(bytes[o..o + 8].try_into().unwrap());
     Ok(Header {
         tile,
         band,
-        levels_pa: (0..levels).map(|k| f32_at(HEADER + 4 * k)).collect(),
+        levels_pa,
         wind_scale: f32_at(12),
         omega_scale: f32_at(16),
         valid_times: (0..times).map(|t| i64_at(times_at + 8 * t)).collect(),

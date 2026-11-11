@@ -27,6 +27,8 @@ struct IndexEntry {
     start: u64,
     /// One past the last byte; `None` for the last field in the file.
     end: Option<u64>,
+    /// Whether another field is packed into the same message.
+    shared: bool,
     variable: String,
     level: String,
 }
@@ -70,11 +72,17 @@ fn parse_index(text: &str) -> Vec<IndexEntry> {
             // Several fields can share one message; they share its offset.
             if previous.start != start {
                 previous.end = Some(start);
+            } else {
+                previous.shared = true;
             }
         }
+        let shared = entries
+            .last()
+            .is_some_and(|previous| previous.start == start);
         entries.push(IndexEntry {
             start,
             end: None,
+            shared,
             variable: variable.to_string(),
             level: level.to_string(),
         });
@@ -103,19 +111,23 @@ fn retry<T>(what: &str, mut attempt: impl FnMut() -> Result<T>) -> Result<T> {
     unreachable!()
 }
 
-fn fetch_range(agent: &ureq::Agent, url: &str, start: u64, end: u64) -> Result<Vec<u8>> {
+/// Downloads bytes `start..end` of a file, or from `start` to its end.
+fn fetch_range(agent: &ureq::Agent, url: &str, start: u64, end: Option<u64>) -> Result<Vec<u8>> {
+    let range = match end {
+        Some(end) => format!("bytes={start}-{}", end - 1),
+        None => format!("bytes={start}-"),
+    };
     retry(url, || {
-        let mut response = agent
-            .get(url)
-            .header("Range", &format!("bytes={start}-{}", end - 1))
-            .call()?;
+        let mut response = agent.get(url).header("Range", &range).call()?;
         let bytes = response
             .body_mut()
             .with_config()
             .limit(64 << 20)
             .read_to_vec()?;
-        if bytes.len() as u64 != end - start {
-            return Err(format!("got {} of {} bytes", bytes.len(), end - start).into());
+        if let Some(end) = end {
+            if bytes.len() as u64 != end - start {
+                return Err(format!("got {} of {} bytes", bytes.len(), end - start).into());
+            }
         }
         Ok(bytes)
     })
@@ -182,24 +194,36 @@ pub fn fetch_fields(
         .ok_or_else(|| format!("2 m temperature is not in {url}"))?;
     wanted.push((3 * levels + 1, temperature));
     wanted.sort_by_key(|(_, e)| e.start);
+    // Decoding takes the first field of a message, so a wanted field that
+    // shares its message with another could come back as the other one.
+    if let Some((_, entry)) = wanted.iter().find(|(_, e)| e.shared) {
+        return Err(format!(
+            "{} at {} shares a GRIB message with another field in {url}",
+            entry.variable, entry.level
+        )
+        .into());
+    }
 
     let mut fields: Vec<Option<Vec<f32>>> = vec![None; 3 * levels + 2];
     let mut group_start = 0;
     while group_start < wanted.len() {
         let mut group_end = group_start + 1;
         while group_end < wanted.len() {
-            let previous_end = wanted[group_end - 1].1.end.ok_or("field without an end")?;
+            // The last field in the file has no known end and is fetched alone.
+            let Some(previous_end) = wanted[group_end - 1].1.end else {
+                break;
+            };
             if wanted[group_end].1.start > previous_end + MERGE_GAP {
                 break;
             }
             group_end += 1;
         }
         let from = wanted[group_start].1.start;
-        let to = wanted[group_end - 1].1.end.ok_or("field without an end")?;
+        let to = wanted[group_end - 1].1.end;
         let bytes = fetch_range(agent, &url, from, to)?;
         for (slot, entry) in &wanted[group_start..group_end] {
-            let end = entry.end.ok_or("field without an end")?;
-            let message = &bytes[(entry.start - from) as usize..(end - from) as usize];
+            let end = entry.end.map_or(bytes.len(), |end| (end - from) as usize);
+            let message = &bytes[(entry.start - from) as usize..end];
             let values = decode(message)
                 .map_err(|e| format!("{} {} in {url}: {e}", entry.variable, entry.level))?;
             fields[*slot] = Some(values);
@@ -252,6 +276,8 @@ mod tests {
         assert_eq!((index[1].start, index[1].end), (1000, Some(2500)));
         assert_eq!((index[2].start, index[2].end), (1000, Some(2500)));
         assert_eq!(index[3].end, None);
+        let shared: Vec<bool> = index.iter().map(|e| e.shared).collect();
+        assert_eq!(shared, [false, true, true, false]);
         assert_eq!(index[2].variable, "VGRD");
         assert_eq!(index[2].level, "850 mb");
     }

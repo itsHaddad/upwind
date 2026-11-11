@@ -123,7 +123,8 @@ export function tellStory(place: string, path: PathPoint[], regionAt: (point: Pa
   const hours = path.length - 1;
   const origin = regionAt(oldest);
   const originKm = distanceKm(start, oldest);
-  const where = origin ? `over ${inSentence(origin)}` : "far from any coast";
+  // Without a name for the place, give the distance, which is always known.
+  const where = origin ? `over ${inSentence(origin)}` : `${roundKm(originKm)} km away`;
   const when = ago(hours);
   const headline = `${when[0]?.toUpperCase()}${when.slice(1)}, the air above ${place} was ${where}.`;
 

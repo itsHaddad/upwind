@@ -1,6 +1,6 @@
 // Serves web/dist and the local wind tiles. Run with: bun scripts/dev.ts
 
-import { join, normalize } from "node:path";
+import { join, normalize, sep } from "node:path";
 
 const root = join(import.meta.dir, "..");
 const dist = join(root, "web/dist");
@@ -9,12 +9,14 @@ const port = Number(process.env.PORT ?? 4173);
 
 function inside(base: string, path: string): string | undefined {
   const full = normalize(join(base, path));
-  return full.startsWith(base) ? full : undefined;
+  return full === base || full.startsWith(base + sep) ? full : undefined;
 }
 
 Bun.serve({
   port,
-  hostname: "0.0.0.0",
+  // Only this machine by default. HOST=0.0.0.0 opens it to the network,
+  // which a browser on the Windows side of WSL needs.
+  hostname: process.env.HOST ?? "127.0.0.1",
   async fetch(request) {
     const { pathname } = new URL(request.url);
     const path = decodeURIComponent(pathname);

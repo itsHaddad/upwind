@@ -9,7 +9,7 @@ use upwind_core::build::GlobalFields;
 
 use crate::gfs::Result;
 use crate::pack;
-use crate::timeline::{self, Entry};
+use crate::timeline::{self, Entry, Published};
 
 /// The cycle the made-up history starts at: 2026-01-01 00 UTC.
 pub const CYCLE: i64 = 1_767_225_600;
@@ -67,6 +67,13 @@ pub fn run(data: &Path) -> Result<()> {
     if let Some(message) = failure.into_inner().unwrap() {
         return Err(message.into());
     }
-    timeline::write_manifest(data, &timeline::published(data)?, CYCLE)?;
+    let published: Vec<Published> = days
+        .iter()
+        .map(|day| Published {
+            dir: day.dir(),
+            times: day.times(),
+        })
+        .collect();
+    timeline::write_manifest(data, &published, CYCLE)?;
     Ok(())
 }

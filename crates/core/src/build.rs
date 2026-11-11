@@ -2,8 +2,8 @@
 
 use crate::codec::{quantize, quantize_ps, quantize_t, Tile, OMEGA_SCALE, WIND_SCALE};
 use crate::grid::{
-    global_index, BandId, TileId, BANDS, BAND_COUNT, CELL_DEG, LEVELS_PA, NLAT, NLON, PLANE,
-    TILE_COUNT, TILE_N,
+    edge_stride, global_index, BandId, TileId, BANDS, BAND_COUNT, CELL_DEG, LEVELS_PA, NLAT, NLON,
+    PLANE, TILE_COUNT, TILE_N,
 };
 
 /// Points in one level of the global grid.
@@ -105,9 +105,17 @@ impl GlobalCounts {
         let cut = |field: &[i16], level: usize, out: &mut Vec<i16>| {
             let base = level * GLOBAL_PLANE;
             for j in 0..TILE_N {
+                // Along an edge shared with a coarser row, only every
+                // `coarse`-th longitude counts; the rest are interpolated.
+                let coarse = edge_stride(tile, j);
                 for i in 0..TILE_N {
                     let (col, row) = global_index(tile, i, j);
-                    out.push(field[base + row * NLON + col]);
+                    let line = base + row * NLON;
+                    let west = col / coarse * coarse;
+                    let a = f32::from(field[line + west]);
+                    let b = f32::from(field[line + (west + coarse) % NLON]);
+                    let across = (col - west) as f32 / coarse as f32;
+                    out.push((a + (b - a) * across).round() as i16);
                 }
             }
         };

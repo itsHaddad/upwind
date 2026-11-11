@@ -1,6 +1,7 @@
 // The page: wires the search box, the engine, the globe and the story panel.
 
 import type { GeometryCollection, Topology } from "topojson-specification";
+import { firstPlace, locate, type Notice, nextTask, share } from "./device";
 import { Engine } from "./engine";
 import { type FreeArea, frame } from "./globe/camera";
 import { paintMap } from "./globe/earth";
@@ -9,12 +10,12 @@ import { direction } from "./globe/mat";
 import { drawnRadius } from "./globe/paths";
 import { ensemble, MAX_HOURS, mainPath, pointAt, toPathSet } from "./journey";
 import { Panel } from "./panel";
-import { type Place, placeFromQuery, placeToQuery, searchPlaces, timezoneCity } from "./places";
+import { type Place, placeToQuery } from "./places";
 import { Regions } from "./regions";
 import { SearchBox } from "./search";
 import { type PathPoint, tellStory } from "./story";
 import { availableHours, latestStart, runTrace } from "./trace";
-import { Winds } from "./winds";
+import { MissingWindError, Winds } from "./winds";
 
 /** Seconds the whole history takes to play. */
 const PLAY_SECONDS = 9;
@@ -41,18 +42,13 @@ interface Current {
 let current: Current | undefined;
 let tracing: AbortController | undefined;
 let regions: Regions | undefined;
+/** Settles when the place names have loaded or failed to. */
+let regionsSettled: Promise<void> = Promise.resolve();
+/** The engine and the wind history it is reading. */
+let session: { engine: Engine; winds: Winds } | undefined;
 let lastFrame = performance.now();
 /** How the last trace went, for tests and tuning. */
 let lastTrace: { waits: number; waitMs: number; files: number } | undefined;
-
-/** Yields to the browser. A message, not a timer or animation frame: those slow to a crawl in a hidden tab. */
-function nextTask(): Promise<void> {
-  return new Promise((resolve) => {
-    const channel = new MessageChannel();
-    channel.port1.onmessage = () => resolve();
-    channel.port2.postMessage(null);
-  });
-}
 
 /** Whether the panel sits beside the globe (wide screens) or below it (phones). */
 const isWide = () => window.innerWidth > 720;
@@ -116,27 +112,26 @@ panel.onScrub = (hour) => {
   current.hour = Math.min(hour, current.ready);
 };
 panel.onPlayToggle = () => setPlaying(!current?.playing);
-panel.onShare = () => void share();
+const notify = (notice: Notice | undefined) => {
+  if (notice) panel.setStatus(notice.text, notice.isError);
+};
+panel.onShare = () => void share(byId("headline").textContent ?? "").then(notify);
 
-/** Hands the page address and headline to the device's share sheet, or copies the address. */
-async function share(): Promise<void> {
-  const text = byId("headline").textContent ?? "";
-  try {
-    if (navigator.share) {
-      await navigator.share({ title: document.title, text, url: location.href });
-    } else {
-      await navigator.clipboard.writeText(location.href);
-      panel.setStatus("Link copied. Anyone who opens it sees this path.");
-    }
-  } catch (error) {
-    // Closing the share sheet is not an error worth reporting.
-    if (!(error instanceof DOMException && error.name === "AbortError")) {
-      panel.setStatus("The link could not be shared. Copy it from the address bar.", true);
-    }
-  }
+/**
+ * The wind history is refreshed every few hours and old days are removed.
+ * A page that has been open across a refresh holds an out-of-date list of
+ * files; this fetches the current one.
+ */
+async function refreshWinds(): Promise<void> {
+  if (!session) return;
+  session.winds = await Winds.open(WIND_BASE);
+  session.engine.reset(session.winds.times);
+  panel.setSource(session.winds.manifest.generated);
 }
 
-async function follow(engine: Engine, winds: Winds, chosen: Place): Promise<void> {
+async function follow(chosen: Place, isRetry = false): Promise<void> {
+  if (!session) return;
+  const { engine, winds } = session;
   tracing?.abort();
   const mine = new AbortController();
   tracing = mine;
@@ -177,10 +172,16 @@ async function follow(engine: Engine, winds: Winds, chosen: Place): Promise<void
     );
     if (mine.signal.aborted) return;
     tracing = undefined;
-    lastTrace = { waits: result.waits, waitMs: Math.round(result.waitMs), files: winds.files };
-    const megabytes = (winds.bytes / 1e6).toFixed(1);
+    lastTrace = { waits: result.waits, waitMs: Math.round(result.waitMs), files: result.files };
+    // The story names places; wait for the names rather than tell it without them.
+    await regionsSettled;
+    if (mine.signal.aborted) return;
+    const megabytes = (result.bytes / 1e6).toFixed(1);
+    const fetched = result.files > 0 ? `, from ${megabytes} MB of wind` : "";
+    const unnamed = regions ? "" : " Place names could not be loaded.";
     panel.setStatus(
-      `${starts.length} paths traced in ${Math.max(1, Math.round(result.computeMs))} ms on your device, from ${megabytes} MB of wind.`,
+      `${starts.length} paths traced in ${Math.max(1, Math.round(result.computeMs))} ms on your device${fetched}.${unnamed}`,
+      !regions,
     );
     const story = tellStory(chosen.name, state.path, (p) => regions?.at(p.lon, p.lat));
     panel.finish(story, (leg) => {
@@ -196,40 +197,20 @@ async function follow(engine: Engine, winds: Winds, chosen: Place): Promise<void
   } catch (error) {
     if (mine.signal.aborted) return;
     tracing = undefined;
+    if (error instanceof MissingWindError && !isRetry) {
+      panel.setStatus("Fetching the newest wind…");
+      try {
+        await refreshWinds();
+      } catch (refreshError) {
+        panel.setStatus(refreshError instanceof Error ? refreshError.message : String(refreshError), true);
+        return;
+      }
+      // Unless the person picked another place while that was loading.
+      if (tracing === undefined) await follow(chosen, true);
+      return;
+    }
     panel.setStatus(error instanceof Error ? error.message : String(error), true);
   }
-}
-
-async function firstPlace(): Promise<Place | undefined> {
-  const fromAddress = placeFromQuery(location.search);
-  if (fromAddress) return fromAddress;
-  const city = timezoneCity();
-  if (!city) return undefined;
-  try {
-    return (await searchPlaces(city))[0];
-  } catch {
-    return undefined;
-  }
-}
-
-function locate(pick: (place: Place) => void): void {
-  if (!navigator.geolocation) {
-    panel.setStatus("This browser cannot share a location. Type a place instead.", true);
-    return;
-  }
-  panel.setStatus("Asking your browser where you are…");
-  navigator.geolocation.getCurrentPosition(
-    ({ coords }) =>
-      pick({
-        name: "your location",
-        detail: "",
-        // Two decimals is about a kilometre: plenty for wind, kinder to privacy.
-        lon: Math.round(coords.longitude * 100) / 100,
-        lat: Math.round(coords.latitude * 100) / 100,
-      }),
-    () => panel.setStatus("Your location was not shared. Type a place instead.", true),
-    { maximumAge: 600_000, timeout: 15_000 },
-  );
 }
 
 async function start(): Promise<void> {
@@ -245,7 +226,7 @@ async function start(): Promise<void> {
     .then((response) => response.json() as Promise<Atlas>)
     .then((atlas) => globe.setMap(paintMap(atlas, globe.mapWidth)))
     .catch(() => panel.setStatus("The map could not be loaded; the paths will still be drawn.", true));
-  void Regions.load(".")
+  regionsSettled = Regions.load(".")
     .then((loaded) => {
       regions = loaded;
     })
@@ -259,10 +240,11 @@ async function start(): Promise<void> {
   ]);
   engine.reset(winds.times);
   panel.setSource(winds.manifest.generated);
+  session = { engine, winds };
 
-  const pick = (chosen: Place) => void follow(engine, winds, chosen);
+  const pick = (chosen: Place) => void follow(chosen);
   const search = new SearchBox(byId<HTMLFormElement>("search"), pick, (message) => panel.setStatus(message, true));
-  byId("locate").addEventListener("click", () => locate(pick));
+  byId("locate").addEventListener("click", () => locate(pick, notify));
 
   const first = await firstPlace();
   if (first) {

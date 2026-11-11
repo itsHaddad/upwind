@@ -190,7 +190,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 /// level is used.
 fn bracket(levels: &[f32], pressure: f32) -> (usize, usize, f32) {
     let last = levels.len() - 1;
-    if pressure >= levels[0] {
+    if pressure.is_nan() || pressure >= levels[0] {
         return (0, 0, 0.0);
     }
     if pressure <= levels[last] {
@@ -214,5 +214,6 @@ mod tests {
         assert_eq!((k0, k1), (1, 2));
         assert!((f - 0.5).abs() < 1e-6);
         assert_eq!(bracket(&levels, 90_000.0), (1, 2, 0.0));
+        assert_eq!(bracket(&levels, f32::NAN), (0, 0, 0.0));
     }
 }

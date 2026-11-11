@@ -75,3 +75,16 @@ test("a path becomes a story", () => {
     if (next) expect(leg.fromHoursAgo + 1).toBe(next.untilHoursAgo);
   }
 });
+
+test("without place names the story gives distances and claims nothing else", () => {
+  const path: PathPoint[] = Array.from({ length: 25 }, (_, hour) => ({
+    lon: 20 - hour * 0.5,
+    lat: 60,
+    hpa: 950,
+    heightM: 500,
+  }));
+  const story = tellStory("Stockholm", path, () => undefined);
+  expect(story.headline).toBe("Yesterday, the air above Stockholm was 670 km away.");
+  expect(story.origin).toBeUndefined();
+  expect(story.legs.length).toBe(1);
+});
