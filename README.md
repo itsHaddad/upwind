@@ -42,7 +42,7 @@ From the command line:
 
 ## Hosting it
 
-The page is static files (`web/dist`). The wind is static files too (`data/wind`, about 260 MB), refreshed four times a day by `.github/workflows/wind.yml`. They can live on different hosts: build the page with `UPWIND_WIND_BASE=https://your-wind-host` and serve the wind with `Access-Control-Allow-Origin: *`. A trace downloads a few megabytes, so choose a wind host that does not cut you off after a fixed amount of traffic.
+The page is static files (`web/dist`). The wind is static files too (`data/wind`, about 260 MB). `.github/workflows/wind.yml` refreshes the wind four times a day and publishes both to GitHub Pages, with no secrets to set up. They can also live on different hosts: build the page with `UPWIND_WIND_BASE=https://your-wind-host` and serve the wind with `Access-Control-Allow-Origin: *`. A trace downloads a few megabytes, so choose a wind host that does not cut you off after a fixed amount of traffic.
 
 ## How far to trust it
 

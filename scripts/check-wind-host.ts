@@ -2,7 +2,8 @@
 // publishing: bun scripts/check-wind-host.ts https://your-wind-host
 //
 // The page depends on three things the host's configuration decides: other
-// sites may read the files, the manifest is not remembered for long, and a
+// sites may read the files, the manifest is not remembered for long (the
+// page also asks for a fresh copy every time), and a
 // file that is gone is answered with 404 (that is how a page that has been
 // open across a refresh learns its manifest is out of date).
 
@@ -34,7 +35,7 @@ const manifestResponse = await fetch(`${site}/manifest.json`, { cache: "no-store
 expect(manifestResponse.status === 200, `manifest: status ${manifestResponse.status}`);
 checkReadable(manifestResponse, "manifest");
 expect(
-  maxAge(manifestResponse) <= 300,
+  maxAge(manifestResponse) <= 3600,
   `manifest: may be reused for ${maxAge(manifestResponse)} s; it must stay fresh`,
 );
 

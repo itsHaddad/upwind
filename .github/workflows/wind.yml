@@ -1,24 +1,25 @@
-# Refreshes the wind history after each GFS run and publishes it.
+# Refreshes the wind history after each GFS run and publishes the site.
 #
 # GFS runs start at 00, 06, 12 and 18 UTC and their first twelve forecast
 # hours are on NOAA's bucket about four hours later.
 #
-# The wind is published as a Cloudflare Pages project (direct upload): a
-# deployment replaces the whole history at once, so a visitor never sees a
-# manifest that points at files that are not there yet, and only files that
-# changed are uploaded. Needs two repository secrets and one variable:
-#   secrets.CLOUDFLARE_API_TOKEN   a token that may edit Cloudflare Pages
-#   secrets.CLOUDFLARE_ACCOUNT_ID
-#   vars.WIND_PAGES_PROJECT        the name of the Pages project
+# The page and the wind are published together to GitHub Pages. A deployment
+# replaces everything at once, so a visitor never reads a manifest that
+# points at files that are not there yet. Nothing here needs a secret.
 name: Wind
 
 on:
   schedule:
     - cron: "40 4,10,16,22 * * *"
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
+  actions: write
 
 concurrency:
   group: wind
@@ -27,12 +28,18 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
       - run: cargo build --release -p upwind-tools
 
       # What earlier runs downloaded and published: only new valid times are
@@ -56,38 +63,36 @@ jobs:
           path: data
           key: wind-data-${{ github.run_id }}
 
-      # Cloudflare Pages joins the values when two rules set the same header,
-      # so each header is set by exactly one rule for any path: everything may
-      # be read from other sites; the manifest is short-lived; a file inside
-      # a day directory (day/band/tile) never changes.
-      - name: Say how the files may be cached and who may read them
+      - name: Build the page with the wind beside it
         if: hashFiles('data/wind/manifest.json') != ''
         run: |
-          cat > data/wind/_headers <<'HEADERS'
-          /*
-            Access-Control-Allow-Origin: *
-          /manifest.json
-            Cache-Control: public, max-age=60
-          /:day/:band/:file
-            Cache-Control: public, max-age=31536000, immutable
-          HEADERS
-          # Without this, Pages answers a missing file with a page and status
-          # 200, and the page could not tell that its manifest is out of date.
-          echo "Not found" > data/wind/404.html
+          bun run wasm
+          bun scripts/build-web.ts
+          cp -r data/wind web/dist/data
+          # Files and folders starting with "_" or "." are served as they are.
+          touch web/dist/.nojekyll
 
-      - name: Publish
+      - uses: actions/upload-pages-artifact@v3
         if: hashFiles('data/wind/manifest.json') != ''
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          PROJECT: ${{ vars.WIND_PAGES_PROJECT }}
-        run: bunx wrangler@4 pages deploy data/wind --project-name "$PROJECT" --branch main --commit-dirty=true
+        with:
+          path: web/dist
+
+      - id: deploy
+        if: hashFiles('data/wind/manifest.json') != ''
+        uses: actions/deploy-pages@v4
 
       - name: Check what visitors are served
         if: hashFiles('data/wind/manifest.json') != ''
+        run: bun scripts/check-wind-host.ts "${{ steps.deploy.outputs.page_url }}data"
+
+      # GitHub switches off scheduled workflows in a repository that has seen
+      # no activity for sixty days. Enabling the workflow again restarts that
+      # clock, so the refresh keeps running without anyone touching it.
+      - name: Keep the schedule alive
+        if: github.event_name == 'schedule'
         env:
-          SITE: https://${{ vars.WIND_PAGES_PROJECT }}.pages.dev
-        run: bun scripts/check-wind-host.ts "$SITE"
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/wind.yml/enable"
 
       - name: Report a failed refresh
         if: steps.ingest.outcome == 'failure'
