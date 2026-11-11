@@ -34,14 +34,14 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
-    env:
-      GH_TOKEN: ${{ github.token }}
     steps:
       # Third-party actions are pinned to a commit: this job's token can
       # replace the published site.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Check that Pages is switched on
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if ! gh api "repos/${{ github.repository }}/pages" --silent; then
             echo "GitHub Pages is not switched on for this repository." >&2
@@ -98,8 +98,10 @@ jobs:
       # not document that it does, so treat this as a best effort: if the
       # schedule ever stops, Actions → Wind → Enable workflow starts it again.
       - name: Keep the schedule alive
-        if: always() && github.event_name == 'schedule'
+        if: ${{ !cancelled() && github.event_name == 'schedule' }}
         continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/wind.yml/enable"
 
       - name: Report a failed refresh

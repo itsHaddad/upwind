@@ -18,6 +18,10 @@ Copyright 2013-2019 Michael Bostock. ISC License (text as above). The map data i
 
 Copyright Frommi and oyvindln. MIT, Zlib or Apache-2.0 licensed. Compiled into the WebAssembly engine.
 
+## adler2
+
+Copyright Jonas Schievink, oyvindln and contributors. 0BSD, MIT or Apache-2.0 licensed. Compiled into the WebAssembly engine.
+
 ## Data
 
 - Wind: NOAA Global Forecast System, a work of the United States government, in the public domain.
