@@ -60,7 +60,7 @@ flowchart LR
     classDef web fill:#143b33,stroke:#4fd1a5,color:#eef3fb
 ```
 
-- **The engine** ([`crates/core`](crates/core)) is about a thousand lines of Rust with one small dependency. It uses the predictor-corrector scheme of NOAA's [HYSPLIT](https://www.ready.noaa.gov/HYSPLIT.php) model, with winds averaged as Earth-centred vectors so paths stay accurate on curved flows and across the poles. The same code runs natively and in the browser.
+- **The engine** ([`crates/core`](crates/core)) is under 1,500 lines of Rust with one small dependency. It uses the predictor-corrector scheme of NOAA's [HYSPLIT](https://www.ready.noaa.gov/HYSPLIT.php) model, with winds averaged as Earth-centred vectors so paths stay accurate on curved flows and across the poles. The same code runs natively and in the browser.
 - **The wind files.** The 1° global grid on 17 pressure levels is cut three ways: into tiles (wider towards the poles), into three altitude bands, and into days. A trace asks for a chunk only when the air enters it, and the engine predicts which chunks it will need next so they are already on their way.
 - **The pipeline** ([`crates/tools`](crates/tools)) reads NOAA's index files and downloads only the fields it needs by byte range. Ten days of global wind build in about a minute.
 - **The page** ([`web/`](web)) is TypeScript with no framework: a WebGL2 globe, the engine wrapper and the story text. Place names come from a 29 kB lookup grid built from Natural Earth.
