@@ -37,6 +37,8 @@ interface Current {
   playing: boolean;
   /** Whole hours the engine has produced. */
   ready: number;
+  /** The main path is complete and its story is on screen. */
+  told: boolean;
 }
 
 let current: Current | undefined;
@@ -52,7 +54,7 @@ let latestPick: Place | undefined;
 let refreshing: Promise<void> | undefined;
 let lastFrame = performance.now();
 /** How the last trace went, for tests and tuning. */
-let lastTrace: { waits: number; waitMs: number; files: number } | undefined;
+let lastTrace: { waits: number; waitMs: number; files: number; storyMs: number; aroundMs?: number } | undefined;
 
 /** Whether the panel sits beside the globe (wide screens) or below it (phones). */
 const isWide = () => window.innerWidth > 720;
@@ -86,7 +88,7 @@ globe.onFrame = (now) => {
   if (current.playing) {
     const limit = Math.max(0, current.ready);
     current.hour = Math.min(limit, current.hour + (seconds * MAX_HOURS) / PLAY_SECONDS);
-    if (current.hour >= current.path.length - 1 && tracing === undefined) setPlaying(false);
+    if (current.hour >= current.path.length - 1 && current.told) setPlaying(false);
   }
   globe.paths.head = current.hour;
   place(pin, current.place.lon, current.place.lat, 1, current.place.name);
@@ -156,8 +158,15 @@ async function follow(chosen: Place, isRetry = false): Promise<void> {
   const startTime = latestStart(winds, Date.now() / 1000);
   const hours = availableHours(winds, startTime, MAX_HOURS);
   const starts = ensemble(chosen);
-  current = { place: chosen, startTime, path: [], hour: 0, playing: true, ready: 0 };
+  current = { place: chosen, startTime, path: [], hour: 0, playing: true, ready: 0, told: false };
   const state = current;
+  const began = performance.now();
+  const options = {
+    // People who asked their browser to save data get only the wind the paths need.
+    lookAhead: !(navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData,
+    signal: mine.signal,
+    pause: nextTask,
+  };
 
   history.replaceState(null, "", placeToQuery(chosen));
   document.title = `Upwind — the air above ${chosen.name}`;
@@ -170,37 +179,41 @@ async function follow(chosen: Place, isRetry = false): Promise<void> {
   globe.camera.flyTo({ lon: chosen.lon, lat: chosen.lat, distance: 2.1 }, 1400);
 
   try {
+    // The main path first and alone: it needs a fraction of the wind the
+    // whole set does, so the story is on screen several times sooner.
     const result = await runTrace(
       engine,
       winds,
-      { starts, startTime, hours },
+      { starts: starts.slice(0, 1), startTime, hours },
       {
+        ...options,
         rowsPerChunk: 24,
-        // People who asked their browser to save data get only the wind the paths need.
-        lookAhead: !(navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData,
-        signal: mine.signal,
-        pause: nextTask,
         onProgress: ({ rows, points }) => {
-          state.path = mainPath(points, starts.length);
+          state.path = mainPath(points, 1);
           state.ready = state.path.length - 1;
-          globe.setPaths(toPathSet(points, starts.length));
+          globe.setPaths(toPathSet(points, 1));
           panel.setStatus(`Following the wind back… ${Math.max(0, rows - 1)} of ${hours} hours`);
         },
       },
     );
     if (mine.signal.aborted) return;
-    lastTrace = { waits: result.waits, waitMs: Math.round(result.waitMs), files: result.files };
+    lastTrace = {
+      waits: result.waits,
+      waitMs: Math.round(result.waitMs),
+      files: result.files,
+      storyMs: Math.round(performance.now() - began),
+    };
     // The story names places; wait for the names rather than tell it without them.
     await regionsSettled;
     if (mine.signal.aborted) return;
-    tracing = undefined;
-    const megabytes = (result.bytes / 1e6).toFixed(1);
-    const fetched = result.files > 0 ? `, from ${megabytes} MB of wind` : "";
+    state.told = true;
     const unnamed = regions ? "" : " Place names could not be loaded.";
-    panel.setStatus(
-      `${starts.length} paths traced in ${Math.max(1, Math.round(result.computeMs))} ms on your device${fetched}.${unnamed}`,
-      !regions,
-    );
+    const summary = (paths: number, ms: number, bytes: number) => {
+      const fetched = bytes > 0 ? `, from ${(bytes / 1e6).toFixed(1)} MB of wind` : "";
+      const what = paths === 1 ? "The path was" : `${paths} paths were`;
+      return `${what} traced in ${Math.max(1, Math.round(ms))} ms on your device${fetched}.`;
+    };
+    panel.setStatus(`${summary(1, result.computeMs, result.bytes)} Adding the paths around it…${unnamed}`, !regions);
     const story = tellStory(chosen.name, state.path, (p) => regions?.at(p.lon, p.lat));
     panel.finish(story, (leg) => {
       setPlaying(false);
@@ -212,6 +225,20 @@ async function follow(chosen: Place, isRetry = false): Promise<void> {
       freeArea(),
     );
     globe.camera.flyTo(view, 4200);
+
+    // Then the paths around it. If they cannot be had, the main path stands.
+    try {
+      const around = await runTrace(engine, winds, { starts, startTime, hours }, options);
+      if (mine.signal.aborted) return;
+      globe.setPaths(toPathSet(around.points, starts.length));
+      const ms = result.computeMs + around.computeMs;
+      panel.setStatus(`${summary(starts.length, ms, result.bytes + around.bytes)}${unnamed}`, !regions);
+      lastTrace.aroundMs = Math.round(performance.now() - began);
+    } catch {
+      if (!mine.signal.aborted) panel.setStatus(`${summary(1, result.computeMs, result.bytes)}${unnamed}`, !regions);
+    } finally {
+      if (tracing === mine) tracing = undefined;
+    }
   } catch (error) {
     if (mine.signal.aborted) return;
     tracing = undefined;
@@ -236,7 +263,7 @@ async function start(): Promise<void> {
   window.addEventListener("resize", layout);
   globe.camera.drift = 2.5;
   globe.camera.onGrab = () => {
-    if (current?.playing && tracing === undefined) setPlaying(false);
+    if (current?.playing && current.told) setPlaying(false);
   };
 
   type Atlas = Topology<{ countries: GeometryCollection; land: GeometryCollection }>;
