@@ -27,13 +27,17 @@ type Area = Feature<Polygon | MultiPolygon, Record<string, unknown>>;
 
 async function marineAreas(): Promise<Area[]> {
   mkdirSync(cache, { recursive: true });
-  const file = Bun.file(join(cache, `${MARINE}.geojson`));
-  if (!(await file.exists())) {
+  const path = join(cache, `${MARINE}.geojson`);
+  let text: string;
+  if (await Bun.file(path).exists()) {
+    text = await Bun.file(path).text();
+  } else {
     const response = await fetch(MARINE_URL);
     if (!response.ok) throw new Error(`Could not download ${MARINE_URL}`);
-    await Bun.write(file, response);
+    text = await response.text();
+    await Bun.write(path, text);
   }
-  const collection = (await file.json()) as FeatureCollection<Polygon | MultiPolygon>;
+  const collection = JSON.parse(text) as FeatureCollection<Polygon | MultiPolygon>;
   return collection.features as Area[];
 }
 

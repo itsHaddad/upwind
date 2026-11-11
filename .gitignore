@@ -4,3 +4,5 @@
 /web/public/engine.wasm
 node_modules
 *.log
+.vercel
+.env*.local
