@@ -18,6 +18,9 @@ export interface TraceResult {
   points: Float32Array;
   /** Milliseconds spent computing, without the time spent downloading. */
   computeMs: number;
+  /** Times the trace had to stop for wind that was not downloaded yet, and for how long. */
+  waits: number;
+  waitMs: number;
 }
 
 export interface TraceProgress {
@@ -29,13 +32,16 @@ export interface TraceOptions {
   /** Rows to compute between progress reports. */
   rowsPerChunk?: number;
   onProgress?: (progress: TraceProgress) => void;
+  /**
+   * Download wind the paths are heading for before it is needed. Faster,
+   * at the cost of some downloads that turn out not to be needed. On by
+   * default.
+   */
+  lookAhead?: boolean;
   /** Called between chunks; lets the page draw a frame. */
   pause?: () => Promise<void>;
   signal?: AbortSignal;
 }
-
-/** Valid times fetched ahead of need for a tile the air is in. */
-const LOOKAHEAD_STEPS = 4;
 
 /** The newest whole hour the history can be traced back from. */
 export function latestStart(winds: Winds, nowSeconds: number): number {
@@ -56,6 +62,8 @@ export async function runTrace(
   const chunk = options.rowsPerChunk ?? 240;
   engine.start(request.starts, request.startTime, request.hours);
   let computeMs = 0;
+  let waits = 0;
+  let waitMs = 0;
   let reported = 0;
   for (;;) {
     options.signal?.throwIfAborted();
@@ -63,6 +71,9 @@ export async function runTrace(
     const step = engine.advance(chunk);
     computeMs += performance.now() - began;
     if (step.status === "done") break;
+    // Start on the wind the paths are heading for, so that the trace rarely
+    // has to stop and wait for a download.
+    if (options.lookAhead !== false) winds.prefetch(engine.lookAhead());
     const rows = engine.rows();
     if (rows > reported) {
       reported = rows;
@@ -70,16 +81,19 @@ export async function runTrace(
       await options.pause?.();
     }
     if (step.status === "need") {
-      // The air will very likely stay in these tiles for the next hours
-      // too, so start on the earlier times now instead of one wait each.
-      for (const key of step.tiles) winds.prefetch(key, LOOKAHEAD_STEPS);
-      const files = await Promise.all(step.tiles.map((key) => winds.tile(key)));
+      const asked = performance.now();
+      const files = await winds.fetchNew(step.tiles);
+      const waited = performance.now() - asked;
+      if (waited > 4) {
+        waits += 1;
+        waitMs += waited;
+      }
       options.signal?.throwIfAborted();
-      for (const file of files) engine.addTile(file);
+      for (const file of files) engine.add(file);
     }
   }
   const points = engine.points();
   const rows = points.length / (request.starts.length * ROW_WIDTH);
   options.onProgress?.({ rows, points });
-  return { request, rows, points, computeMs };
+  return { request, rows, points, computeMs, waits, waitMs };
 }

@@ -27,12 +27,13 @@ beforeAll(async () => {
   const made = Bun.spawnSync([native, "synth", "--data", data]);
   if (made.exitCode !== 0) throw new Error(`upwind synth failed: ${made.stderr.toString()}`);
   engine = await Engine.load(await Bun.file(join(root, "web/public/engine.wasm")).arrayBuffer());
-  winds = await Winds.open(data, fromDisk);
+  winds = await Winds.open(join(data, "wind"), fromDisk);
   engine.reset(winds.times);
 }, 120_000);
 
 test("the history says what it covers", () => {
   expect(winds.times.length).toBe(17);
+  expect(winds.manifest.days.length).toBe(3);
   expect(latestStart(winds, END + 5000)).toBe(END);
   expect(latestStart(winds, END - 1800)).toBe(END - 3600);
   expect(availableHours(winds, END, 240)).toBe(48);
@@ -49,12 +50,25 @@ test("a trace in the browser engine matches the native one", async () => {
   expect(result.rows).toBe(49);
   expect(progress.at(-1)).toBe(49);
   expect(progress.length).toBeGreaterThan(3);
-  expect(winds.tiles).toBeGreaterThan(4);
-  expect(winds.tiles).toBeLessThan(17 * 72);
+  expect(winds.files).toBeGreaterThan(4);
+  expect(winds.files).toBeLessThan(60);
 
   const run = Bun.spawnSync([
-    native, "trace", "--data", data, "--lat", "55.7", "--lon", "13.19",
-    "--height", "500,1500", "--hours", "48", "--time", "2026010300", "--json",
+    native,
+    "trace",
+    "--data",
+    data,
+    "--lat",
+    "55.7",
+    "--lon",
+    "13.19",
+    "--height",
+    "500,1500",
+    "--hours",
+    "48",
+    "--time",
+    "2026010300",
+    "--json",
   ]);
   expect(run.exitCode).toBe(0);
   const reference = JSON.parse(run.stdout.toString()) as { parcels: { path: number[][] }[] };
@@ -65,6 +79,7 @@ test("a trace in the browser engine matches the native one", async () => {
       expect(result.points[at]).toBeCloseTo(expected[0] as number, 3);
       expect(result.points[at + 1]).toBeCloseTo(expected[1] as number, 3);
       expect(result.points[at + 2]).toBeCloseTo(expected[2] as number, 1);
+      expect(Math.abs((result.points[at + 3] as number) - (expected[3] as number))).toBeLessThan(1);
     }
   }
   const lastLon = result.points[48 * starts.length * ROW_WIDTH] as number;
@@ -73,9 +88,9 @@ test("a trace in the browser engine matches the native one", async () => {
 
 test("a second trace reuses the wind already downloaded", async () => {
   await Bun.sleep(50);
-  const before = winds.tiles;
+  const before = winds.files;
   await runTrace(engine, winds, { starts, startTime: END, hours: 48 });
-  expect(winds.tiles).toBe(before);
+  expect(winds.files).toBe(before);
 });
 
 test("a trace can be cancelled", async () => {
@@ -86,5 +101,5 @@ test("a trace can be cancelled", async () => {
 });
 
 test("a damaged tile is refused", () => {
-  expect(() => engine.addTile(new Uint8Array(64))).toThrow();
+  expect(() => engine.add(new Uint8Array(64))).toThrow();
 });

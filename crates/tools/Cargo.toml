@@ -16,3 +16,4 @@ path = "src/main.rs"
 upwind-core = { path = "../core" }
 grib = { version = "0.20", default-features = false }
 ureq = "3"
+miniz_oxide = "0.8"

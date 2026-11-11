@@ -12,13 +12,15 @@
 //! stops and reports the tiles it is missing, and continues from the same
 //! state once they have been added to the store.
 
-use crate::geo::{displace, pressure_above_ground, wind_vector};
-use crate::store::{Miss, TileKey, WindStore};
+use crate::geo::{displace, height_above_ground_m, pressure_above_ground, wind_vector};
+use crate::grid::{band_of, locate};
+use crate::store::{Miss, TileKey, WindStore, TOP_PRESSURE_PA};
 
 /// Seconds between recorded positions.
 pub const OUTPUT_STEP_S: f64 = 3600.0;
-/// Values recorded per parcel per row: longitude, latitude, pressure (hPa).
-pub const ROW_WIDTH: usize = 3;
+/// Values recorded per parcel per row: longitude, latitude, pressure in
+/// hectopascals and height above the ground in metres.
+pub const ROW_WIDTH: usize = 4;
 
 const MAX_STEP_S: f64 = 3600.0;
 const MIN_STEP_S: f64 = 60.0;
@@ -65,6 +67,10 @@ struct Parcel {
     lon: f64,
     lat: f64,
     pressure: f64,
+    /// Surface pressure under the parcel, pascals.
+    surface: f64,
+    /// Temperature at the ground under the parcel, kelvin.
+    surface_k: f64,
     time: f64,
     phase: Phase,
 }
@@ -86,6 +92,8 @@ impl Tracer {
                 lon: s.lon,
                 lat: s.lat,
                 pressure: 0.0,
+                surface: 0.0,
+                surface_k: 0.0,
                 time: start_time,
                 phase: Phase::Pending {
                     height_m: s.height_m,
@@ -121,9 +129,52 @@ impl Tracer {
         &self.out
     }
 
+    /// Chunks the trace will probably need soon and the store does not hold:
+    /// each parcel's last hour of movement is continued in a straight line
+    /// to each of `hours_ahead`. Fetching these while the trace runs saves
+    /// it from stopping for them one at a time. A wrong guess costs one
+    /// small download.
+    pub fn hints(&self, store: &WindStore, hours_ahead: &[f64]) -> Vec<TileKey> {
+        let stride = self.parcels.len() * ROW_WIDTH;
+        let rows = self.rows_done as usize;
+        if rows == 0 {
+            return Vec::new();
+        }
+        let now = self.start_time - (rows - 1) as f64 * OUTPUT_STEP_S;
+        let last = &self.out[(rows - 1) * stride..rows * stride];
+        let before = (rows >= 2).then(|| &self.out[(rows - 2) * stride..(rows - 1) * stride]);
+        let mut keys = Vec::new();
+        for (index, here) in last.as_chunks::<ROW_WIDTH>().0.iter().enumerate() {
+            let [lon, lat, hpa, _] = here.map(f64::from);
+            if lon.is_nan() {
+                continue;
+            }
+            let (dlon, dlat, dhpa) = before.map_or((0.0, 0.0, 0.0), |rows| {
+                let [lon0, lat0, hpa0, _] = rows.as_chunks::<ROW_WIDTH>().0[index].map(f64::from);
+                (
+                    (lon - lon0 + 540.0).rem_euclid(360.0) - 180.0,
+                    lat - lat0,
+                    hpa - hpa0,
+                )
+            });
+            for hours in hours_ahead {
+                let Some((t0, t1)) = store.bracket_times(now - hours * OUTPUT_STEP_S) else {
+                    continue;
+                };
+                let tile = locate(lon + dlon * hours, (lat + dlat * hours).clamp(-90.0, 90.0)).tile;
+                let band = band_of(((hpa + dhpa * hours) * 100.0) as f32);
+                keys.extend([(t0, tile, band), (t1, tile, band)]);
+            }
+        }
+        keys.sort_unstable();
+        keys.dedup();
+        keys.retain(|key| !store.has(*key));
+        keys
+    }
+
     /// Runs the trace for up to `max_rows` more rows.
     pub fn advance(&mut self, store: &WindStore, max_rows: u32) -> Status {
-        let top = f64::from(store.top_pressure().unwrap_or(0.0));
+        let top = f64::from(TOP_PRESSURE_PA);
         let mut budget = max_rows;
         while self.rows_done <= self.hours {
             if budget == 0 {
@@ -145,6 +196,8 @@ impl Tracer {
                         parcel.lon as f32,
                         parcel.lat as f32,
                         (parcel.pressure / 100.0) as f32,
+                        height_above_ground_m(parcel.pressure, parcel.surface, parcel.surface_k)
+                            as f32,
                     ]);
                 } else {
                     self.out.extend([f32::NAN; ROW_WIDTH]);
@@ -162,7 +215,9 @@ fn run_to(store: &WindStore, parcel: &mut Parcel, target: f64, top: f64, needs: 
     if let Phase::Pending { height_m } = parcel.phase {
         match store.sample(parcel.lon, parcel.lat, 100_000.0, parcel.time) {
             Ok(s) => {
-                parcel.pressure = pressure_above_ground(f64::from(s.ps), height_m);
+                parcel.surface = f64::from(s.ps);
+                parcel.surface_k = f64::from(s.t2);
+                parcel.pressure = pressure_above_ground(parcel.surface, height_m, parcel.surface_k);
                 parcel.phase = Phase::Active;
             }
             Err(miss) => return record(miss, parcel, needs),
@@ -204,6 +259,8 @@ fn step(store: &WindStore, parcel: &mut Parcel, target: f64, top: f64) -> Result
     let (lon, lat) = displace(parcel.lon, parcel.lat, mean, dt);
     let omega = 0.5 * (f64::from(here.w) + f64::from(there.w));
     parcel.pressure = confine(parcel.pressure + omega * dt, there.ps, top);
+    parcel.surface = f64::from(there.ps);
+    parcel.surface_k = f64::from(there.t2);
     parcel.lon = lon;
     parcel.lat = lat;
     parcel.time += dt;

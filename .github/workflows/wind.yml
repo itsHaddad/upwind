@@ -1,0 +1,60 @@
+# Refreshes the wind history after each GFS run and publishes it.
+#
+# GFS runs start at 00, 06, 12 and 18 UTC and their first twelve forecast
+# hours are on NOAA's bucket about four hours later.
+#
+# Needs these repository secrets, for an S3-compatible bucket (Cloudflare R2
+# works well: downloads from it are not billed):
+#   WIND_S3_ENDPOINT, WIND_S3_BUCKET, WIND_S3_ACCESS_KEY_ID, WIND_S3_SECRET_ACCESS_KEY
+name: Wind
+
+on:
+  schedule:
+    - cron: "40 4,10,16,22 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wind
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p upwind-tools
+
+      # The downloaded fields from earlier runs: only new valid times are fetched.
+      - uses: actions/cache@v4
+        with:
+          path: data/cache
+          key: wind-cache-${{ github.run_id }}
+          restore-keys: wind-cache-
+
+      - run: ./target/release/upwind ingest --data data --days 10 --jobs 4
+
+      - name: Publish
+        env:
+          RCLONE_CONFIG_WIND_TYPE: s3
+          RCLONE_CONFIG_WIND_PROVIDER: Cloudflare
+          RCLONE_CONFIG_WIND_ENDPOINT: ${{ secrets.WIND_S3_ENDPOINT }}
+          RCLONE_CONFIG_WIND_ACCESS_KEY_ID: ${{ secrets.WIND_S3_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_WIND_SECRET_ACCESS_KEY: ${{ secrets.WIND_S3_SECRET_ACCESS_KEY }}
+          BUCKET: ${{ secrets.WIND_S3_BUCKET }}
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          # Day directories never change once written, so they can be cached
+          # for a year. New days go up first; the manifest that points at
+          # them goes last; days no manifest points at any more go after that.
+          rclone copy data/wind "wind:$BUCKET" --exclude manifest.json --size-only --transfers 32 \
+            --header-upload "Cache-Control: public, max-age=31536000, immutable"
+          rclone copyto data/wind/manifest.json "wind:$BUCKET/manifest.json" \
+            --header-upload "Cache-Control: public, max-age=60"
+          rclone sync data/wind "wind:$BUCKET" --size-only --transfers 32 \
+            --header-upload "Cache-Control: public, max-age=31536000, immutable" --exclude manifest.json

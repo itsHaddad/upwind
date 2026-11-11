@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>How Upwind works</title>
+    <meta
+      name="description"
+      content="How Upwind follows the air above a place back through ten days of wind, how far to trust it, and what it sends from your device."
+    />
+    <meta name="theme-color" content="#04070d" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%23081326'/%3E%3Cpath d='M5 21c6-1 8-9 14-9 3 0 5 2 8 2' fill='none' stroke='%23ffd9a0' stroke-width='2.6' stroke-linecap='round'/%3E%3Ccircle cx='27' cy='14' r='2.6' fill='%23fff'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./about.css" />
+  </head>
+  <body class="page">
+    <article>
+      <a class="wordmark" href="./">upwind</a>
+      <h1>How it works</h1>
+
+      <p>
+        The air around you arrived from somewhere. Upwind takes the place you choose, starts 500 metres above it, and
+        steps backwards through the wind, hour by hour, for up to ten days. The line on the globe is the path that air
+        took to reach you.
+      </p>
+
+      <h2>Where the wind comes from</h2>
+      <p>
+        The wind is from the Global Forecast System, the weather model run by the United States National Oceanic and
+        Atmospheric Administration (NOAA) four times a day. NOAA publishes it freely. Upwind keeps the last ten days:
+        wind speed, wind direction and rising or sinking motion on a one-degree grid at seventeen heights, every three
+        hours.
+      </p>
+
+      <h2>How the path is found</h2>
+      <p>
+        At each step the engine reads the wind where the air is, moves the air against it to a first guess of where it
+        was a few minutes earlier, reads the wind there, and moves again with the average of the two. This is the same
+        scheme NOAA's own trajectory model, HYSPLIT, uses. Air rises and sinks as well as drifting sideways, so the path
+        is followed in three dimensions; the line is drawn above the globe, with heights exaggerated so you can see
+        them, over a faint track on the ground.
+      </p>
+      <p>
+        The engine is written in Rust and runs in your browser. Your device downloads only the wind along the path, a
+        few megabytes, and computes the path itself.
+      </p>
+
+      <h2>How far to trust it</h2>
+      <p>
+        A path like this is an estimate, and it gets less certain the further back it goes. Small differences in where
+        and how high the air starts can send it somewhere quite different a week earlier. That is why Upwind draws
+        several fainter paths around the main one: they start a little to each side and at other heights. Where they
+        stay together, the answer is solid. Where they fan out, read the far end as "roughly from that direction".
+      </p>
+      <p>
+        We compared Upwind with HYSPLIT for the same starting points and times. Against HYSPLIT run on wind of the same
+        resolution, the paths differ by about a quarter of the distance travelled, which is the usual difference between
+        two trajectory models. Near high mountains the height of the path is less reliable. The wind near the ground is
+        also more turbulent than any model at this scale can show, so the air at street level is a mixture: this is the
+        path of the air mass, and not of each molecule in it.
+      </p>
+
+      <h2>What leaves your device</h2>
+      <ul>
+        <li>
+          When you type a place, the text you type goes to the Open-Meteo place search, which returns matching places and
+          their coordinates.
+        </li>
+        <li>
+          When you choose "Use my location", your browser gives the page your position. The page rounds it to about a
+          kilometre and uses it on your device. It appears in the page address so you can share the result; nothing else
+          stores it.
+        </li>
+        <li>
+          The page downloads wind files for the regions the path crosses. Which files are requested shows roughly where
+          the path went.
+        </li>
+        <li>When you first open the page, it looks up the city your device's time zone is named after, to have something to show.</li>
+      </ul>
+
+      <h2>Sources and thanks</h2>
+      <ul>
+        <li>Wind: NOAA Global Forecast System, via NOAA's open data programme.</li>
+        <li>Coastlines, borders and sea names: Natural Earth (public domain) and world-atlas.</li>
+        <li>Place search: Open-Meteo geocoding, built on GeoNames.</li>
+        <li>Method: NOAA Air Resources Laboratory's HYSPLIT model, which this follows and is checked against.</li>
+      </ul>
+      <p>Upwind is open source. <a href="./">Back to the globe</a></p>
+    </article>
+  </body>
+</html>

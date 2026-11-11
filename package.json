@@ -7,7 +7,7 @@
     "wasm": "cargo build --release -p upwind-wasm --target wasm32-unknown-unknown && cp target/wasm32-unknown-unknown/release/upwind_wasm.wasm web/public/engine.wasm",
     "build": "bun run wasm && bun scripts/build-web.ts",
     "dev": "bun scripts/dev.ts",
-    "test": "cargo test --workspace --quiet && bun test",
+    "test": "cargo test --workspace --quiet && cargo build --release --quiet -p upwind-tools && bun test",
     "lint": "cargo fmt --all --check && cargo clippy --workspace --all-targets --quiet && cargo clippy -p upwind-wasm --target wasm32-unknown-unknown --quiet && biome check web scripts && tsc --noEmit",
     "check": "bun run lint && bun run wasm && bun run test"
   },

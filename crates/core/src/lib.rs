@@ -1,7 +1,7 @@
 //! Where has the air been?
 //!
 //! This crate holds everything needed to follow air backwards through the
-//! atmosphere: the layout of the wind grid ([`grid`]), the tile file format
+//! atmosphere: the layout of the wind grid ([`grid`]), the wind file format
 //! ([`codec`]), interpolation in the loaded tiles ([`store`]) and the
 //! trajectory integrator ([`tracer`]). It has no I/O and compiles to
 //! WebAssembly unchanged.

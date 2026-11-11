@@ -1,15 +1,20 @@
-//! The set of wind tiles loaded so far, and interpolation inside it.
+//! The wind loaded so far, and interpolation inside it.
 
-use crate::codec::{Tile, PS_OFFSET, PS_SCALE};
-use crate::grid::{locate, TileId, TilePos, PLANE, TILE_COUNT, TILE_N};
+use crate::codec::{Tile, PS_OFFSET, PS_SCALE, T_OFFSET, T_SCALE};
+use crate::grid::{
+    band_of, locate, BandId, TileId, TilePos, BAND_COUNT, LEVELS_PA, PLANE, TILE_COUNT, TILE_N,
+};
 
-/// A tile the store does not hold yet: `(valid_time, tile)`.
-pub type TileKey = (i64, TileId);
+/// A chunk of wind the store does not hold yet: valid time, tile and band.
+pub type TileKey = (i64, TileId, BandId);
+
+/// Chunks per valid time.
+const SLOTS_PER_TIME: usize = TILE_COUNT * BAND_COUNT;
 
 /// Why a point could not be sampled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Miss {
-    /// The tile is needed and has not been added.
+    /// The chunk is needed and has not been added.
     Tile(TileKey),
     /// The time is outside the store's timeline.
     OutOfTime,
@@ -26,6 +31,8 @@ pub struct Sample {
     pub w: f32,
     /// Surface pressure, pascals.
     pub ps: f32,
+    /// Temperature two metres above the ground, kelvin.
+    pub t2: f32,
 }
 
 impl Sample {
@@ -36,11 +43,15 @@ impl Sample {
             v: l(a.v, b.v),
             w: l(a.w, b.w),
             ps: l(a.ps, b.ps),
+            t2: l(a.t2, b.t2),
         }
     }
 }
 
-/// Tiles indexed by position on a fixed timeline.
+/// Lowest pressure (highest altitude) the wind data reaches, pascals.
+pub const TOP_PRESSURE_PA: f32 = LEVELS_PA[LEVELS_PA.len() - 1];
+
+/// Chunks of wind indexed by position on a fixed timeline.
 pub struct WindStore {
     times: Vec<i64>,
     tiles: Vec<Option<Box<Tile>>>,
@@ -51,7 +62,7 @@ impl WindStore {
     pub fn new(mut times: Vec<i64>) -> Self {
         times.sort_unstable();
         times.dedup();
-        let slots = times.len() * TILE_COUNT;
+        let slots = times.len() * SLOTS_PER_TIME;
         Self {
             times,
             tiles: (0..slots).map(|_| None).collect(),
@@ -62,11 +73,15 @@ impl WindStore {
         &self.times
     }
 
-    /// Adds a tile. Returns false when its time is not on the timeline.
+    fn slot(time_index: usize, tile: TileId, band: BandId) -> usize {
+        time_index * SLOTS_PER_TIME + tile as usize * BAND_COUNT + band as usize
+    }
+
+    /// Adds a chunk. Returns false when its time is not on the timeline.
     pub fn add(&mut self, tile: Tile) -> bool {
         match self.times.binary_search(&tile.valid_time) {
             Ok(t) => {
-                let slot = t * TILE_COUNT + tile.tile as usize;
+                let slot = Self::slot(t, tile.tile, tile.band);
                 self.tiles[slot] = Some(Box::new(tile));
                 true
             }
@@ -77,10 +92,28 @@ impl WindStore {
     pub fn has(&self, key: TileKey) -> bool {
         self.times
             .binary_search(&key.0)
-            .is_ok_and(|t| self.tiles[t * TILE_COUNT + key.1 as usize].is_some())
+            .is_ok_and(|t| self.tiles[Self::slot(t, key.1, key.2)].is_some())
     }
 
-    /// Number of tiles held.
+    /// The valid times around `time`: the last at or before it and the
+    /// first at or after it. `None` outside the timeline.
+    pub fn bracket_times(&self, time: f64) -> Option<(i64, i64)> {
+        let first = *self.times.first()? as f64;
+        let last = *self.times.last()? as f64;
+        if !(first..=last).contains(&time) {
+            return None;
+        }
+        let after = self.times.partition_point(|t| (*t as f64) <= time);
+        let t0 = self.times[after.saturating_sub(1)];
+        let t1 = if t0 as f64 == time {
+            t0
+        } else {
+            self.times[after.min(self.times.len() - 1)]
+        };
+        Some((t0, t1))
+    }
+
+    /// Number of chunks held.
     pub fn len(&self) -> usize {
         self.tiles.iter().filter(|t| t.is_some()).count()
     }
@@ -104,7 +137,7 @@ impl WindStore {
         let t1 = after.min(self.times.len() - 1);
         let pos = locate(lon, lat);
         let a = self.sample_at(t0, &pos, pressure as f32)?;
-        if t1 == t0 {
+        if t1 == t0 || time == self.times[t0] as f64 {
             return Ok(a);
         }
         let b = self.sample_at(t1, &pos, pressure as f32)?;
@@ -114,9 +147,10 @@ impl WindStore {
     }
 
     fn sample_at(&self, t: usize, pos: &TilePos, pressure: f32) -> Result<Sample, Miss> {
-        let tile = self.tiles[t * TILE_COUNT + pos.tile as usize]
+        let band = band_of(pressure);
+        let tile = self.tiles[Self::slot(t, pos.tile, band)]
             .as_deref()
-            .ok_or(Miss::Tile((self.times[t], pos.tile)))?;
+            .ok_or(Miss::Tile((self.times[t], pos.tile, band)))?;
         let (k0, k1, az) = bracket(&tile.levels_pa, pressure);
         let cell = pos.j * TILE_N + pos.i;
         let corner = |field: &[i16], k: usize| -> f32 {
@@ -142,16 +176,8 @@ impl WindStore {
             v: column(&tile.v) * tile.wind_scale,
             w: column(&tile.w) * tile.omega_scale,
             ps: corner(&tile.ps, 0) * PS_SCALE + PS_OFFSET,
+            t2: corner(&tile.t2, 0) * T_SCALE + T_OFFSET,
         })
-    }
-
-    /// Lowest pressure (highest altitude) the loaded data reaches, pascals.
-    pub fn top_pressure(&self) -> Option<f32> {
-        self.tiles
-            .iter()
-            .flatten()
-            .next()
-            .and_then(|t| t.levels_pa.last().copied())
     }
 }
 

@@ -2,9 +2,10 @@
 
 use upwind_core::build::GlobalFields;
 use upwind_core::geo::{distance_m, EARTH_RADIUS_M};
+use upwind_core::grid::locate;
+use upwind_core::tracer::ROW_WIDTH;
 use upwind_core::{Start, Status, Tile, Tracer, WindStore};
 
-const LEVELS: [f32; 4] = [100_000.0, 85_000.0, 70_000.0, 50_000.0];
 const T0: i64 = 1_794_000_000;
 const HOUR: i64 = 3600;
 
@@ -15,8 +16,8 @@ fn steady_tiles(wind: Wind, hours: i64) -> Vec<Tile> {
     (0..=hours / 3)
         .flat_map(|step| {
             let fields =
-                GlobalFields::from_fn(T0 - step * 3 * HOUR, &LEVELS, wind, |_, _| 101_000.0);
-            fields.tiles().collect::<Vec<_>>()
+                GlobalFields::from_fn(T0 - step * 3 * HOUR, wind, |_, _| (101_000.0, 288.15));
+            fields.quantize().tiles().collect::<Vec<_>>()
         })
         .collect()
 }
@@ -35,8 +36,9 @@ fn trace(store: &WindStore, start: Start, hours: u32) -> Vec<f32> {
     tracer.points().to_vec()
 }
 
+/// Longitude, latitude and pressure of the oldest point.
 fn last_row(points: &[f32]) -> (f64, f64, f64) {
-    let row = &points[points.len() - 3..];
+    let row = &points[points.len() - ROW_WIDTH..];
     (f64::from(row[0]), f64::from(row[1]), f64::from(row[2]))
 }
 
@@ -144,14 +146,63 @@ fn a_trace_that_waits_for_tiles_matches_one_that_had_them() {
                 rounds += 1;
                 for key in keys {
                     assert!(!store.has(key), "asked again for a tile it holds");
-                    let tile = tiles.iter().find(|t| (t.valid_time, t.tile) == key);
+                    let tile = tiles.iter().find(|t| (t.valid_time, t.tile, t.band) == key);
                     assert!(store.add(tile.unwrap().clone()));
                 }
             }
         }
     }
-    assert!(rounds > 2 && store.len() < tiles.len() / 4);
+    assert!(rounds > 2 && store.len() < tiles.len() / 20);
     assert_eq!(tracer.points(), eager.as_slice());
+}
+
+#[test]
+fn hints_name_the_chunks_a_steady_flow_reaches_next() {
+    let tiles = steady_tiles(zonal, 48);
+    let start = Start {
+        lon: 10.0,
+        lat: 45.0,
+        height_m: 500.0,
+    };
+    let mut store = WindStore::new(tiles.iter().map(|t| t.valid_time).collect());
+    let mut tracer = Tracer::new(&[start], T0 as f64, 48);
+    assert!(
+        tracer.hints(&store, &[6.0]).is_empty(),
+        "nothing is known before the first row"
+    );
+
+    // Run two rows, feeding the tracer what it asks for.
+    let mut asked = Vec::new();
+    while tracer.rows_done() < 2 {
+        if let Status::Need(keys) = tracer.advance(&store, 1) {
+            for key in keys {
+                let tile = tiles.iter().find(|t| (t.valid_time, t.tile, t.band) == key);
+                store.add(tile.unwrap().clone());
+                asked.push(key);
+            }
+        }
+    }
+    // The flow turns the air around the axis at a steady rate, so 24 hours
+    // back it is some thirty degrees further west, one day earlier.
+    let turned = (40.0 * 24.0 * 3600.0 / EARTH_RADIUS_M).to_degrees();
+    let expected = locate(10.0 - turned, 45.0).tile;
+    let hints = tracer.hints(&store, &[24.0]);
+    assert!(!hints.is_empty() && hints.iter().all(|key| !store.has(*key)));
+    assert!(hints.iter().all(|key| key.0 <= T0 - 21 * HOUR), "{hints:?}");
+    assert!(
+        hints.iter().all(|key| key.1 == expected),
+        "{asked:?} then {hints:?}"
+    );
+    assert_ne!(asked[0].1, expected);
+
+    // A trace given its hints up front never has to ask for them.
+    for key in &hints {
+        let tile = tiles
+            .iter()
+            .find(|t| (t.valid_time, t.tile, t.band) == *key);
+        assert!(store.add(tile.unwrap().clone()));
+    }
+    assert!(tracer.hints(&store, &[24.0]).is_empty());
 }
 
 #[test]
@@ -163,7 +214,7 @@ fn a_trace_ends_where_the_data_ends() {
         height_m: 500.0,
     };
     let points = trace(&store, start, 9);
-    assert_eq!(points.len(), 10 * 3);
-    assert!(points[6 * 3].is_finite());
-    assert!(points[7 * 3..].iter().all(|x| x.is_nan()));
+    assert_eq!(points.len(), 10 * ROW_WIDTH);
+    assert!(points[6 * ROW_WIDTH].is_finite());
+    assert!(points[7 * ROW_WIDTH..].iter().all(|x| x.is_nan()));
 }

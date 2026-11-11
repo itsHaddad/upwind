@@ -548,6 +548,7 @@ name = "upwind-tools"
 version = "0.1.0"
 dependencies = [
  "grib",
+ "miniz_oxide 0.8.9",
  "upwind-core",
  "ureq",
 ]

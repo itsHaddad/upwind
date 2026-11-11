@@ -1,31 +1,52 @@
 //! Cuts global wind fields into tiles.
 
-use crate::codec::{quantize, quantize_ps, Tile, OMEGA_SCALE, WIND_SCALE};
-use crate::grid::{global_index, TileId, CELL_DEG, NLAT, NLON, PLANE, TILE_COUNT, TILE_N};
+use crate::codec::{quantize, quantize_ps, quantize_t, Tile, OMEGA_SCALE, WIND_SCALE};
+use crate::grid::{
+    global_index, BandId, TileId, BANDS, BAND_COUNT, CELL_DEG, LEVELS_PA, NLAT, NLON, PLANE,
+    TILE_COUNT, TILE_N,
+};
 
-/// Wind on the whole 1° grid at one valid time. Three-dimensional fields are
-/// stored level by level, each level row by row from 90°N, each row from 0°E.
+/// Points in one level of the global grid.
+pub const GLOBAL_PLANE: usize = NLAT * NLON;
+
+/// Wind on the whole 1° grid at one valid time, on every level of
+/// [`LEVELS_PA`]. Three-dimensional fields are stored level by level, each
+/// level row by row from 90°N, each row from 0°E.
 pub struct GlobalFields {
     pub valid_time: i64,
-    /// Pressure levels in pascals, highest pressure first.
-    pub levels_pa: Vec<f32>,
+    /// Eastward wind, metres per second.
     pub u: Vec<f32>,
+    /// Northward wind, metres per second.
     pub v: Vec<f32>,
+    /// Pressure vertical velocity, pascals per second.
     pub w: Vec<f32>,
-    /// Surface pressure in pascals, `NLAT × NLON`.
+    /// Surface pressure in pascals, one plane.
     pub ps: Vec<f32>,
+    /// Temperature two metres above the ground in kelvin, one plane.
+    pub t2: Vec<f32>,
+}
+
+/// The same as stored counts: what the wind files hold.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlobalCounts {
+    pub valid_time: i64,
+    pub u: Vec<i16>,
+    pub v: Vec<i16>,
+    pub w: Vec<i16>,
+    pub ps: Vec<i16>,
+    pub t2: Vec<i16>,
 }
 
 impl GlobalFields {
     /// Fills the grid from functions of `(lon, lat, pressure_pa)` returning
-    /// `(u, v, omega)` and of `(lon, lat)` returning surface pressure.
+    /// `(u, v, omega)` and of `(lon, lat)` returning surface pressure and
+    /// the temperature two metres above the ground.
     pub fn from_fn(
         valid_time: i64,
-        levels_pa: &[f32],
         wind: impl Fn(f64, f64, f32) -> (f32, f32, f32),
-        surface: impl Fn(f64, f64) -> f32,
+        surface: impl Fn(f64, f64) -> (f32, f32),
     ) -> Self {
-        let n = levels_pa.len() * NLAT * NLON;
+        let n = LEVELS_PA.len() * GLOBAL_PLANE;
         let (mut u, mut v, mut w) = (
             Vec::with_capacity(n),
             Vec::with_capacity(n),
@@ -35,73 +56,94 @@ impl GlobalFields {
             let (row, col) = (index / NLON, index % NLON);
             (col as f64 * CELL_DEG, 90.0 - row as f64 * CELL_DEG)
         };
-        for level in levels_pa {
-            for index in 0..NLAT * NLON {
+        for level in LEVELS_PA {
+            for index in 0..GLOBAL_PLANE {
                 let (lon, lat) = coords(index);
-                let (a, b, c) = wind(lon, lat, *level);
+                let (a, b, c) = wind(lon, lat, level);
                 u.push(a);
                 v.push(b);
                 w.push(c);
             }
         }
-        let ps = (0..NLAT * NLON)
+        let (ps, t2) = (0..GLOBAL_PLANE)
             .map(|index| {
                 let (lon, lat) = coords(index);
                 surface(lon, lat)
             })
-            .collect();
+            .unzip();
         Self {
             valid_time,
-            levels_pa: levels_pa.to_vec(),
             u,
             v,
             w,
             ps,
+            t2,
         }
     }
 
-    /// Cuts out one tile.
-    pub fn tile(&self, tile: TileId) -> Tile {
-        let levels = self.levels_pa.len();
-        let cut =
-            |field: &[f32], level: usize, convert: &dyn Fn(f32) -> i16, out: &mut Vec<i16>| {
-                let base = level * NLAT * NLON;
-                for j in 0..TILE_N {
-                    for i in 0..TILE_N {
-                        let (col, row) = global_index(tile, i, j);
-                        out.push(convert(field[base + row * NLON + col]));
-                    }
+    /// Rounds the fields to stored counts.
+    pub fn quantize(&self) -> GlobalCounts {
+        let n = LEVELS_PA.len() * GLOBAL_PLANE;
+        assert!(self.u.len() == n && self.v.len() == n && self.w.len() == n);
+        assert!(self.ps.len() == GLOBAL_PLANE && self.t2.len() == GLOBAL_PLANE);
+        GlobalCounts {
+            valid_time: self.valid_time,
+            u: self.u.iter().map(|x| quantize(*x, WIND_SCALE)).collect(),
+            v: self.v.iter().map(|x| quantize(*x, WIND_SCALE)).collect(),
+            w: self.w.iter().map(|x| quantize(*x, OMEGA_SCALE)).collect(),
+            ps: self.ps.iter().map(|x| quantize_ps(*x)).collect(),
+            t2: self.t2.iter().map(|x| quantize_t(*x)).collect(),
+        }
+    }
+}
+
+impl GlobalCounts {
+    /// Cuts out one tile of one altitude band.
+    pub fn tile(&self, tile: TileId, band: BandId) -> Tile {
+        let (first, last) = BANDS[band as usize];
+        let levels = last - first + 1;
+        let cut = |field: &[i16], level: usize, out: &mut Vec<i16>| {
+            let base = level * GLOBAL_PLANE;
+            for j in 0..TILE_N {
+                for i in 0..TILE_N {
+                    let (col, row) = global_index(tile, i, j);
+                    out.push(field[base + row * NLON + col]);
                 }
-            };
-        let wind = |x: f32| quantize(x, WIND_SCALE);
-        let omega = |x: f32| quantize(x, OMEGA_SCALE);
-        let (mut u, mut v, mut w, mut ps) = (
+            }
+        };
+        let (mut u, mut v, mut w, mut ps, mut t2) = (
             Vec::with_capacity(levels * PLANE),
             Vec::with_capacity(levels * PLANE),
             Vec::with_capacity(levels * PLANE),
             Vec::with_capacity(PLANE),
+            Vec::with_capacity(PLANE),
         );
-        for level in 0..levels {
-            cut(&self.u, level, &wind, &mut u);
-            cut(&self.v, level, &wind, &mut v);
-            cut(&self.w, level, &omega, &mut w);
+        for level in first..=last {
+            cut(&self.u, level, &mut u);
+            cut(&self.v, level, &mut v);
+            cut(&self.w, level, &mut w);
         }
-        cut(&self.ps, 0, &quantize_ps, &mut ps);
+        cut(&self.ps, 0, &mut ps);
+        cut(&self.t2, 0, &mut t2);
         Tile {
             valid_time: self.valid_time,
             tile,
-            levels_pa: self.levels_pa.clone(),
+            band,
+            levels_pa: LEVELS_PA[first..=last].to_vec(),
             wind_scale: WIND_SCALE,
             omega_scale: OMEGA_SCALE,
             u,
             v,
             w,
             ps,
+            t2,
         }
     }
 
-    /// Cuts out every tile.
+    /// Cuts out every tile of every band.
     pub fn tiles(&self) -> impl Iterator<Item = Tile> + '_ {
-        (0..TILE_COUNT).map(|t| self.tile(t as TileId))
+        (0..TILE_COUNT).flat_map(move |tile| {
+            (0..BAND_COUNT).map(move |band| self.tile(tile as TileId, band as BandId))
+        })
     }
 }

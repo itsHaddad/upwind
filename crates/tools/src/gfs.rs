@@ -9,18 +9,13 @@ use std::time::Duration;
 
 use grib::LatLons;
 use upwind_core::build::GlobalFields;
-use upwind_core::grid::{NLAT, NLON};
+use upwind_core::grid::{LEVELS_PA, NLAT, NLON};
 
 use crate::time::{cycle_to_unix, unix_to_cycle};
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
 const BUCKET: &str = "https://noaa-gfs-bdp-pds.s3.amazonaws.com";
-
-/// Pressure levels kept, in hectopascals, lowest altitude first.
-pub const LEVELS_HPA: [u32; 17] = [
-    1000, 975, 950, 925, 900, 850, 800, 750, 700, 650, 600, 500, 400, 300, 250, 200, 150,
-];
 
 /// Neighbouring fields closer than this are fetched in one request.
 const MERGE_GAP: u64 = 250_000;
@@ -162,12 +157,13 @@ pub fn fetch_fields(
     })?;
     let index = parse_index(&index_text);
 
-    // What is wanted, as (slot, entry). Slots: variable × level, then surface.
-    let levels = LEVELS_HPA.len();
+    // What is wanted, as (slot, entry). Slots: variable × level, then the
+    // two surface fields.
+    let levels = LEVELS_PA.len();
     let mut wanted: Vec<(usize, &IndexEntry)> = Vec::new();
     for (v, variable) in ["UGRD", "VGRD", "VVEL"].iter().enumerate() {
-        for (k, level) in LEVELS_HPA.iter().enumerate() {
-            let name = format!("{level} mb");
+        for (k, level) in LEVELS_PA.iter().enumerate() {
+            let name = format!("{} mb", (level / 100.0).round() as u32);
             let entry = index
                 .iter()
                 .find(|e| e.variable == *variable && e.level == name)
@@ -180,9 +176,14 @@ pub fn fetch_fields(
         .find(|e| e.variable == "PRES" && e.level == "surface")
         .ok_or_else(|| format!("surface pressure is not in {url}"))?;
     wanted.push((3 * levels, surface));
+    let temperature = index
+        .iter()
+        .find(|e| e.variable == "TMP" && e.level == "2 m above ground")
+        .ok_or_else(|| format!("2 m temperature is not in {url}"))?;
+    wanted.push((3 * levels + 1, temperature));
     wanted.sort_by_key(|(_, e)| e.start);
 
-    let mut fields: Vec<Option<Vec<f32>>> = vec![None; 3 * levels + 1];
+    let mut fields: Vec<Option<Vec<f32>>> = vec![None; 3 * levels + 2];
     let mut group_start = 0;
     while group_start < wanted.len() {
         let mut group_end = group_start + 1;
@@ -213,11 +214,11 @@ pub fn fetch_fields(
     };
     Ok(GlobalFields {
         valid_time: cycle_unix + i64::from(forecast_hour) * 3600,
-        levels_pa: LEVELS_HPA.iter().map(|h| *h as f32 * 100.0).collect(),
         u: take(0..levels),
         v: take(levels..2 * levels),
         w: take(2 * levels..3 * levels),
         ps: take(3 * levels..3 * levels + 1),
+        t2: take(3 * levels + 1..3 * levels + 2),
     })
 }
 

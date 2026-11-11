@@ -5,8 +5,10 @@ use crate::grid::wrap_lon;
 /// Radius of the sphere the GFS model uses, in metres.
 pub const EARTH_RADIUS_M: f64 = 6_371_229.0;
 
-/// Scale height used to turn a height above ground into a pressure, metres.
-const SCALE_HEIGHT_M: f64 = 8_000.0;
+/// Rate at which the standard atmosphere cools with height, kelvin per metre.
+const LAPSE_K_PER_M: f64 = 0.0065;
+/// Gravity over (gas constant of dry air × lapse rate).
+const BAROMETRIC_EXPONENT: f64 = 9.806_65 / (287.05 * LAPSE_K_PER_M);
 
 /// A wind vector in Earth-centred coordinates, metres per second.
 pub type Vec3 = [f64; 3];
@@ -45,8 +47,19 @@ pub fn distance_m(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
 }
 
 /// Pressure in pascals at `height_m` above ground with surface pressure `ps`.
-pub fn pressure_above_ground(ps: f64, height_m: f64) -> f64 {
-    ps * (-height_m / SCALE_HEIGHT_M).exp()
+///
+/// The air between the ground and the parcel is taken to cool with height
+/// at the standard rate from `surface_k`, the temperature at the ground.
+pub fn pressure_above_ground(ps: f64, height_m: f64, surface_k: f64) -> f64 {
+    let cooled = (1.0 - LAPSE_K_PER_M * height_m / surface_k).max(0.01);
+    ps * cooled.powf(BAROMETRIC_EXPONENT)
+}
+
+/// Height above the ground in metres of a pressure, the inverse of
+/// [`pressure_above_ground`].
+pub fn height_above_ground_m(pressure_pa: f64, surface_pa: f64, surface_k: f64) -> f64 {
+    let ratio = (pressure_pa / surface_pa).powf(1.0 / BAROMETRIC_EXPONENT);
+    (surface_k / LAPSE_K_PER_M * (1.0 - ratio)).max(0.0)
 }
 
 /// Altitude above sea level in metres of a pressure in pascals, by the
@@ -91,6 +104,26 @@ mod tests {
         ];
         let speed = (mean[0].powi(2) + mean[1].powi(2) + mean[2].powi(2)).sqrt();
         assert!(speed > 29.9, "{speed}");
+    }
+
+    #[test]
+    fn height_and_pressure_above_ground_are_inverses() {
+        let p = pressure_above_ground(98_000.0, 1500.0, 285.0);
+        assert!((height_above_ground_m(p, 98_000.0, 285.0) - 1500.0).abs() < 1e-6);
+        assert_eq!(height_above_ground_m(99_000.0, 98_000.0, 285.0), 0.0);
+    }
+
+    #[test]
+    fn warm_air_is_thicker_than_cold_air() {
+        // 1500 m above a 1010 hPa surface: about 850 hPa in the tropics,
+        // clearly lower pressure in polar cold.
+        let tropics = pressure_above_ground(101_000.0, 1500.0, 300.0);
+        let arctic = pressure_above_ground(101_000.0, 1500.0, 250.0);
+        assert!((tropics - 85_000.0).abs() < 400.0, "{tropics}");
+        assert!(arctic < tropics - 2_000.0, "{arctic}");
+        // In the standard atmosphere it agrees with the standard altitude.
+        let standard = pressure_above_ground(101_325.0, 1500.0, 288.15);
+        assert!((standard_altitude_m(standard) - 1500.0).abs() < 1.0);
     }
 
     #[test]
