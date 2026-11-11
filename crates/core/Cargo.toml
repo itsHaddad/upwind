@@ -1,0 +1,12 @@
+[package]
+name = "upwind-core"
+description = "Wind tile codec, sampler and air-parcel trajectory integrator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }

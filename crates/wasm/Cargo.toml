@@ -1,0 +1,15 @@
+[package]
+name = "upwind-wasm"
+description = "The trajectory engine as a WebAssembly module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+upwind-core = { path = "../core" }

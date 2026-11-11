@@ -1,0 +1,18 @@
+[package]
+name = "upwind-tools"
+description = "Builds wind tiles from GFS model output and traces air natively"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "upwind"
+path = "src/main.rs"
+
+[dependencies]
+upwind-core = { path = "../core" }
+grib = { version = "0.20", default-features = false }
+ureq = "3"

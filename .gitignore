@@ -1,0 +1,6 @@
+/target
+/data
+/web/dist
+/web/public/engine.wasm
+node_modules
+*.log
