@@ -20,15 +20,22 @@ export interface Manifest {
  */
 export class MissingWindError extends Error {}
 
-export type Fetcher = (url: string) => Promise<Uint8Array>;
+/**
+ * Downloads a file. `fresh` asks for the server's current copy even if the
+ * browser has one it believes is still good.
+ */
+export type Fetcher = (url: string, fresh?: boolean) => Promise<Uint8Array>;
 
-const browserFetch: Fetcher = async (url) => {
-  const response = await fetch(url);
+const browserFetch: Fetcher = async (url, fresh = false) => {
+  const response = await fetch(url, fresh ? { cache: "no-cache" } : undefined);
   if (response.status === 404) throw new MissingWindError("The wind history was updated while this page was open.");
   if (!response.ok)
     throw new Error(`Could not load the wind (${response.status}). Check your connection and try again.`);
   return new Uint8Array(await response.arrayBuffer());
 };
+
+/** Most downloads held at once while waiting to be needed (about 35 kB each). */
+const MAX_HELD_FILES = 300;
 
 /** A downloaded wind file: one tile and altitude band for one day. */
 export interface WindFile {
@@ -41,7 +48,7 @@ export class Winds {
   readonly times: number[];
   /** Index into the manifest's days of each valid time. */
   private readonly dayOf = new Map<number, number>();
-  /** Downloads running or finished and not yet given to the engine. */
+  /** Downloads running or finished and not yet given to the engine, oldest first. */
   private readonly downloads = new Map<string, Promise<Uint8Array>>();
   /** Bytes downloaded so far. */
   bytes = 0;
@@ -60,7 +67,9 @@ export class Winds {
   }
 
   static async open(base: string, fetcher: Fetcher = browserFetch): Promise<Winds> {
-    const text = new TextDecoder().decode(await fetcher(`${base}/manifest.json`));
+    // Always the server's current manifest: a remembered one would point at
+    // days that have since been removed.
+    const text = new TextDecoder().decode(await fetcher(`${base}/manifest.json`, true));
     const manifest = JSON.parse(text) as Manifest;
     if (manifest.version !== 2 || !manifest.days?.length) {
       throw new Error("The wind history is missing or in a format this page does not know.");
@@ -93,6 +102,13 @@ export class Winds {
       });
       this.downloads.set(url, pending);
       pending.catch(() => this.forget(url));
+      // Files fetched ahead of need that no trace asked for would pile up
+      // over a long visit. Let the oldest go; if one is wanted after all it
+      // is simply downloaded again.
+      for (const oldest of this.downloads.keys()) {
+        if (this.downloads.size <= MAX_HELD_FILES) break;
+        this.downloads.delete(oldest);
+      }
     }
     return pending;
   }

@@ -46,6 +46,10 @@ let regions: Regions | undefined;
 let regionsSettled: Promise<void> = Promise.resolve();
 /** The engine and the wind history it is reading. */
 let session: { engine: Engine; winds: Winds } | undefined;
+/** The place picked most recently. */
+let latestPick: Place | undefined;
+/** Set while the wind history is being fetched again. */
+let refreshing: Promise<void> | undefined;
 let lastFrame = performance.now();
 /** How the last trace went, for tests and tuning. */
 let lastTrace: { waits: number; waitMs: number; files: number } | undefined;
@@ -120,21 +124,35 @@ panel.onShare = () => void share(byId("headline").textContent ?? "").then(notify
 /**
  * The wind history is refreshed every few hours and old days are removed.
  * A page that has been open across a refresh holds an out-of-date list of
- * files; this fetches the current one.
+ * files; this fetches the current one. No trace runs while it does: the
+ * trace that found the problem has ended, and `follow` waits for a refresh
+ * in progress before it starts another. Callers share one refresh.
  */
-async function refreshWinds(): Promise<void> {
-  if (!session) return;
-  session.winds = await Winds.open(WIND_BASE);
-  session.engine.reset(session.winds.times);
-  panel.setSource(session.winds.manifest.generated);
+function refreshWinds(): Promise<void> {
+  refreshing ??= (async () => {
+    if (!session) return;
+    const winds = await Winds.open(WIND_BASE);
+    session.engine.reset(winds.times);
+    session.winds = winds;
+    panel.setSource(winds.manifest.generated);
+  })().finally(() => {
+    refreshing = undefined;
+  });
+  return refreshing;
 }
 
 async function follow(chosen: Place, isRetry = false): Promise<void> {
-  if (!session) return;
-  const { engine, winds } = session;
+  latestPick = chosen;
   tracing?.abort();
   const mine = new AbortController();
   tracing = mine;
+  // The engine is being given a new history: start once that is done.
+  if (refreshing) {
+    await refreshing.catch(() => undefined);
+    if (mine.signal.aborted) return;
+  }
+  if (!session) return;
+  const { engine, winds } = session;
   const startTime = latestStart(winds, Date.now() / 1000);
   const hours = availableHours(winds, startTime, MAX_HOURS);
   const starts = ensemble(chosen);
@@ -171,11 +189,11 @@ async function follow(chosen: Place, isRetry = false): Promise<void> {
       },
     );
     if (mine.signal.aborted) return;
-    tracing = undefined;
     lastTrace = { waits: result.waits, waitMs: Math.round(result.waitMs), files: result.files };
     // The story names places; wait for the names rather than tell it without them.
     await regionsSettled;
     if (mine.signal.aborted) return;
+    tracing = undefined;
     const megabytes = (result.bytes / 1e6).toFixed(1);
     const fetched = result.files > 0 ? `, from ${megabytes} MB of wind` : "";
     const unnamed = regions ? "" : " Place names could not be loaded.";
@@ -206,7 +224,7 @@ async function follow(chosen: Place, isRetry = false): Promise<void> {
         return;
       }
       // Unless the person picked another place while that was loading.
-      if (tracing === undefined) await follow(chosen, true);
+      if (latestPick === chosen) await follow(chosen, true);
       return;
     }
     panel.setStatus(error instanceof Error ? error.message : String(error), true);
